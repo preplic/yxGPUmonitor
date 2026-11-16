@@ -164,6 +164,7 @@ def build_payload(private, now=None):
     accounts = private.get("allowed_users") or [row.pw_name for row in pwd.getpwall()
         if (row.pw_uid == 0 or 1000 <= row.pw_uid < 65534) and row.pw_shell not in
         ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false")]
+    accounts = [*accounts, *private.get("extra_allowed_users", [])]
     incidents += [{"t": item["time"], "source": "proxy", "type": item["type"],
                    "message": item.get("error") or item.get("reason"),
                    "seconds": max(0, item.get("end", 0) - item.get("start", 0)) or None}

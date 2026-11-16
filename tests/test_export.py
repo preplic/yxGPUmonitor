@@ -9,7 +9,7 @@ import export_data
 
 
 class CollectorExportTests(unittest.TestCase):
-    def build(self, proxy_state):
+    def build(self, proxy_state, private=None):
         cfg = {"host": "test-node", "gpu_root": "/unused/gpu", "proxy_root": "/unused/proxy",
                "expected_gpu_count": 8, "gpu_interval": 10}
         gpu_state = {"created_at": 100, "started_at": 900, "running": True,
@@ -29,7 +29,7 @@ class CollectorExportTests(unittest.TestCase):
                 patch.object(export_data, "read_json", return_value=gpu_state), \
                 patch.object(export_data, "history", return_value=([], [])), \
                 patch.object(export_data, "gpu_metrics", return_value=[]):
-            return export_data.build_payload({"allowed_users": ["test-account"]}, now=1000)
+            return export_data.build_payload(private or {"allowed_users": ["test-account"]}, now=1000)
 
     def test_restart_keeps_ledger_origin_and_uses_independent_service_start_times(self):
         payload = self.build({"started_at": 800, "stopped_at": 960, "running": False,
@@ -51,6 +51,18 @@ class CollectorExportTests(unittest.TestCase):
         self.assertIsNone(proxy["startedAt"])
         self.assertIsNone(proxy["lastSample"])
         self.assertEqual(proxy["problems"], ["no status"])
+
+    def test_extra_users_preserve_existing_accounts_and_remove_duplicates(self):
+        payload = self.build({}, {"allowed_users": ["test-account"],
+                                  "extra_allowed_users": ["extra-account", "test-account"]})
+        self.assertEqual(payload["allowedUsers"], ["extra-account", "test-account"])
+
+    def test_extra_users_preserve_automatic_linux_account_discovery(self):
+        accounts = [SimpleNamespace(pw_uid=1001, pw_name="server-account", pw_shell="/bin/bash"),
+                    SimpleNamespace(pw_uid=1002, pw_name="no-login", pw_shell="/bin/false")]
+        with patch.object(export_data.pwd, "getpwall", return_value=accounts):
+            payload = self.build({}, {"extra_allowed_users": ["extra-account"]})
+        self.assertEqual(payload["allowedUsers"], ["extra-account", "server-account"])
 
 
 if __name__ == "__main__":
