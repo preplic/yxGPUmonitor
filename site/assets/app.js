@@ -288,6 +288,7 @@ async function fetchEnvelope() {
 }
 
 function logout(message = '') {
+  closeMenu();
   disposeCharts();
   if ($('#detailDialog').open) $('#detailDialog').close();
   $('#detailContent').replaceChildren();
@@ -300,8 +301,13 @@ function logout(message = '') {
   $('#app').hidden = true;
   $('#authScreen').hidden = false;
   $('#loginForm').reset();
+  $('#password').type = 'password';
+  $('#showPassword').setAttribute('aria-label', '显示密码');
+  $('#showPassword').dataset.tooltip = '显示密码';
+  $('#showPassword').innerHTML = icon('eye');
   $('#loginError').textContent = message;
   document.title = 'YX GPU Monitor';
+  icons();
   $('#username').focus();
 }
 
