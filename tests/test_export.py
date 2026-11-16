@@ -9,20 +9,15 @@ import export_data
 
 
 class CollectorExportTests(unittest.TestCase):
-    def build(self, proxy_state, private=None):
-        cfg = {"host": "test-node", "gpu_root": "/unused/gpu", "proxy_root": "/unused/proxy",
+    def build(self, private=None):
+        cfg = {"host": "test-node", "gpu_root": "/unused/gpu",
                "expected_gpu_count": 8, "gpu_interval": 10}
         gpu_state = {"created_at": 100, "started_at": 900, "running": True,
                      "last_success_at": 995, "sample_count": 120, "interval_seconds": 10,
                      "ledger_id": "test-ledger", "users": {}}
-        audit = {"incidents": [], "since": 0, "until": 1000, "last_success_at": 950,
-                 "problems": [], "ports": [1234], "ignore_uids": [],
-                 "coverage_seconds": 900, "coverage": [], "gaps": [], "connections": []}
-        common = SimpleNamespace(load_json=Mock(return_value=proxy_state))
+        common = SimpleNamespace()
         gpu = SimpleNamespace(health=Mock(return_value=[]))
-        proxy = SimpleNamespace(report=Mock(return_value=audit),
-                                health=Mock(return_value=[] if proxy_state else ["no status"]))
-        modules = {"monitor_common": common, "gpu_usage": gpu, "bci-proxy-audit": proxy}
+        modules = {"monitor_common": common, "gpu_usage": gpu}
         with patch.object(export_data, "monitor_paths", return_value=(cfg, "/unused/code")), \
                 patch.object(export_data.sys, "path", []), \
                 patch.object(export_data.importlib, "import_module", side_effect=modules.__getitem__), \
@@ -31,29 +26,28 @@ class CollectorExportTests(unittest.TestCase):
                 patch.object(export_data, "gpu_metrics", return_value=[]):
             return export_data.build_payload(private or {"allowed_users": ["test-account"]}, now=1000)
 
-    def test_restart_keeps_ledger_origin_and_uses_independent_service_start_times(self):
-        payload = self.build({"started_at": 800, "stopped_at": 960, "running": False,
-                              "last_success_at": 950, "sample_count": 2400, "interval_seconds": 0.5})
+    def test_gpu_restart_keeps_ledger_origin_and_uses_current_run_start_time(self):
+        payload = self.build()
         self.assertEqual(payload["node"]["startedAt"], 100)
-        gpu, proxy = payload["collectors"]["gpu"], payload["collectors"]["proxy"]
+        gpu = payload["collectors"]["gpu"]
         self.assertEqual(gpu["startedAt"], 900)
         self.assertTrue(gpu["running"])
-        self.assertEqual(proxy["startedAt"], 800)
-        self.assertFalse(proxy["running"])
-        self.assertEqual(proxy["stoppedAt"], 960)
-        self.assertEqual(proxy["lastSample"], 950)
-        self.assertEqual(proxy["intervalSeconds"], 0.5)
-        self.assertEqual(proxy["sampleCount"], 2400)
 
-    def test_missing_proxy_status_remains_unknown(self):
-        proxy = self.build({})["collectors"]["proxy"]
-        self.assertIsNone(proxy["running"])
-        self.assertIsNone(proxy["startedAt"])
-        self.assertIsNone(proxy["lastSample"])
-        self.assertEqual(proxy["problems"], ["no status"])
+    def test_export_needs_no_proxy_configuration_module_or_logs(self):
+        payload = self.build()
+        self.assertNotIn("audit", payload)
+        self.assertEqual(set(payload["collectors"]), {"gpu"})
+        self.assertTrue(all(item["source"] == "gpu" for item in payload["events"]))
+
+    def test_node_sampling_and_website_publication_have_separate_intervals(self):
+        payload = self.build()
+        self.assertEqual(payload["publishInterval"], 900)
+        self.assertEqual(payload["node"]["gpuInterval"], 10)
+        self.assertEqual(payload["generatedAt"], 1000)
+        self.assertEqual(payload["collectors"]["gpu"]["lastSample"], 995)
 
     def test_extra_users_preserve_existing_accounts_and_remove_duplicates(self):
-        payload = self.build({}, {"allowed_users": ["test-account"],
+        payload = self.build({"allowed_users": ["test-account"],
                                   "extra_allowed_users": ["extra-account", "test-account"]})
         self.assertEqual(payload["allowedUsers"], ["extra-account", "test-account"])
 
@@ -61,7 +55,7 @@ class CollectorExportTests(unittest.TestCase):
         accounts = [SimpleNamespace(pw_uid=1001, pw_name="server-account", pw_shell="/bin/bash"),
                     SimpleNamespace(pw_uid=1002, pw_name="no-login", pw_shell="/bin/false")]
         with patch.object(export_data.pwd, "getpwall", return_value=accounts):
-            payload = self.build({}, {"extra_allowed_users": ["extra-account"]})
+            payload = self.build({"extra_allowed_users": ["extra-account"]})
         self.assertEqual(payload["allowedUsers"], ["extra-account", "server-account"])
 
 

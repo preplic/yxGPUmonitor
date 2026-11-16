@@ -8,10 +8,10 @@ const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = name => `<i data-lucide="${name}"></i>`;
 const palette = ['#55d6aa', '#e9b96b', '#a899ef', '#6da8f5', '#f58d9a', '#7ac8d6'];
-const views = { overview: '监控总览', gpus: 'GPU 设备', users: '用户用量', proxy: '代理审计', events: '运行记录' };
+const views = { overview: '监控总览', gpus: 'GPU 设备', users: '用户用量', events: '运行记录' };
 const modelName = value => value.replace('NVIDIA ', '').replace('-SXM4-40GB', '');
 const state = { data: null, key: null, envelope: null, user: '', expiresAt: 0, hours: 24, mode: 'busy',
-  query: '', port: 'all', eventFilter: 'all', sort: 'hours', descending: true, charts: [] };
+  query: '', eventFilter: 'all', sort: 'hours', descending: true, charts: [] };
 let refreshing = false;
 let toastTimer;
 let chartObserver;
@@ -69,13 +69,13 @@ function heading(title) {
   const data = state.data;
   const good = !data.node.problems.length;
   return `<div class="page-heading"><div><h1>${title}</h1><div class="page-subtitle"><span class="status-dot ${good ? '' : 'warn'}"></span><span>${esc(data.node.name)}</span><span class="separator">/</span><span>${esc(data.node.model)}</span></div></div>
-    <div class="heading-controls">${currentView() === 'proxy' ? '<span class="badge">过去 24 小时</span>' : rangeControls()}<button class="icon-button" data-export aria-label="导出 CSV" data-tooltip="导出 CSV">${icon('download')}</button></div></div>${notices()}`;
+    <div class="heading-controls">${rangeControls()}<button class="icon-button" data-export aria-label="导出 CSV" data-tooltip="导出 CSV">${icon('download')}</button></div></div>${notices()}`;
 }
 
 function notices() {
   const data = state.data;
   const old = Date.now() / 1000 - data.generatedAt > 2100;
-  const issues = [...data.node.problems, ...data.audit.problems];
+  const issues = data.node.problems;
   if (old) return `<div class="notice">${icon('clock-alert')}数据已过期，最近发布于 ${date(data.generatedAt)}。</div>`;
   if (issues.length) return `<div class="notice">${icon('triangle-alert')}节点状态异常：${esc([...new Set(issues)].join(' · '))}</div>`;
   return '';
@@ -93,7 +93,7 @@ function metrics() {
     ['microchip', '当前占卡', `${used}<small>/ ${gpus.length}</small>`, `${gpus.length - used} 张空闲 · ${gpus.filter(gpu => gpu.owners.length > 1).length} 张共享`],
     ['gauge', '平均 GPU 利用率', `${fmt(avg, 0)}<small>%</small>`, `显存 ${fmt(memory, 1)} / ${fmt(total, 0)} GiB`],
     ['chart-no-axes-combined', '区间用户卡时', `${fmt(hours, 2)}<small>GPU·h</small>`, `${Object.keys(data.node.users).length} 个历史账号 · 已观测 ${duration(bounds().last.t - bounds().first.t)}`],
-    ['shield-check', '代理连接记录', `${data.audit.connections.length}<small>条 / 24h</small>`, `已覆盖 ${duration(data.audit.coverageSeconds)}`]
+    ['activity', '累计成功采样', `${fmt(data.node.sampleCount, 0)}<small>次</small>`, `节点采样周期 ${data.node.gpuInterval} 秒`]
   ];
   return `<div class="metrics">${rows.map(([symbol, label, value, meta]) => `<div class="metric"><div class="metric-label">${icon(symbol)}${label}</div><div class="metric-value">${value}</div><div class="metric-meta">${meta}</div></div>`).join('')}</div>`;
 }
@@ -145,31 +145,14 @@ function usersPage() {
   return heading('用户用量') + metrics() + chartPanel(true) + `<section><div class="section-heading"><h2>账号用量明细</h2><span class="heading-note">${date(bounds().first.t)} 起</span></div><div class="filter-bar"><div class="input-icon">${icon('search')}<input id="userSearch" type="search" placeholder="搜索用户名或 UID" aria-label="搜索用户名或 UID" value="${esc(state.query)}"></div><span class="heading-note">共享卡时已计入用户总卡时</span></div><div id="tableContent">${usersTable()}</div></section>`;
 }
 
-function proxyTable() {
-  const rows = state.data.audit.connections.filter(row => (state.port === 'all' || String(row.port) === state.port) &&
-    (!state.query || `${row.username} ${row.uid}`.toLowerCase().includes(state.query.toLowerCase())));
-  return rows.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>UID</th><th>目标端口</th><th>首次观测</th><th>末次观测</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.username || 'uid:' + row.uid)}</td><td class="muted">${row.uid}</td><td><span class="badge">${row.port}</span></td><td>${date(row.first_seen, { second: '2-digit' })}</td><td>${date(row.last_seen, { second: '2-digit' })}</td></tr>`).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条连接记录</span><span>${TIME_ZONE_LABEL}</span></div>` : empty('shield-check', state.query || state.port !== 'all' ? '没有匹配的连接记录' : '已覆盖时段未观测到连接', `${date(state.data.audit.since)} — ${date(state.data.audit.until)}`);
-}
-
-function proxyPage() {
-  const audit = state.data.audit;
-  const rate = audit.coverageSeconds / (audit.until - audit.since) * 100;
-  const cards = [['network', '连接记录', audit.connections.length, '条'], ['scan-line', '覆盖率', fmt(rate, 1), '%'],
-    ['clock-3', '已覆盖时长', fmt(audit.coverageSeconds / 3600, 2), '小时'], ['plug-zap', '审计端口', audit.ports.length, '个']];
-  return heading('代理端口审计') + `<div class="metrics">${cards.map(([symbol, label, value, unit]) => `<div class="metric"><div class="metric-label">${icon(symbol)}${label}</div><div class="metric-value">${value}<small>${unit}</small></div><div class="metric-meta">过去 24 小时</div></div>`).join('')}</div>` +
-    `<section><div class="section-heading"><h2>采样覆盖时间线</h2><span class="heading-note">${audit.gaps.length} 段未确认覆盖</span></div><div class="coverage-band"><div class="coverage-track" aria-label="过去24小时采样覆盖时间线">${audit.coverage.map(([start, end]) => `<div class="coverage-segment" style="left:${(start - audit.since) / 86400 * 100}%;width:${(end - start) / 86400 * 100}%" title="${date(start)} — ${date(end)} · 已覆盖"></div>`).join('')}</div><div class="coverage-axis"><span>${date(audit.since)}</span><span>${date(audit.until)}</span></div></div><div class="scope-tags">${audit.ports.map(port => `<span class="badge">${port}</span>`).join('')}<span class="badge ${audit.ignoredUids.length ? 'warn' : 'good'}">${audit.ignoredUids.length ? '排除 UID ' + audit.ignoredUids.join(', ') : '全部 UID'}</span></div></section>
-    <section><div class="filter-bar"><div class="input-icon">${icon('search')}<input id="proxySearch" type="search" placeholder="搜索用户名或 UID" aria-label="搜索代理连接用户" value="${esc(state.query)}"></div><select id="portFilter" aria-label="筛选端口"><option value="all">全部端口</option>${audit.ports.map(port => `<option value="${port}" ${state.port === String(port) ? 'selected' : ''}>${port}</option>`).join('')}</select></div><div id="tableContent">${proxyTable()}</div></section>
-    <section style="margin-top:28px"><div class="section-heading"><h2>未确认覆盖时段</h2><span class="heading-note">含部署前历史与最新检查点延迟</span></div><div class="table-wrap"><table><thead><tr><th>起始时间</th><th>结束时间</th><th class="number">时长</th></tr></thead><tbody>${audit.gaps.map(([start, end]) => `<tr><td>${date(start, { second: '2-digit' })}</td><td>${date(end, { second: '2-digit' })}</td><td class="number">${duration(end - start)}</td></tr>`).join('')}</tbody></table></div></section>`;
-}
-
 const eventTypes = { start: ['play', '启动', ''], stop: ['square', '停止', ''], gap: ['unplug', '采样缺口', 'text-warning'], sample_error: ['triangle-alert', '采样异常', 'text-danger'] };
 function eventsTable() {
   const since = state.data.node.lastSample - state.hours * 3600;
-  const rows = state.data.events.filter(row => row.t >= since && (state.eventFilter === 'all' || row.type === state.eventFilter));
+  const rows = state.data.events.filter(row => row.source === 'gpu' && row.t >= since && (state.eventFilter === 'all' || row.type === state.eventFilter));
   return rows.length ? `<div class="table-wrap"><table><thead><tr><th>时间</th><th>事件</th><th>来源</th><th>详情</th><th class="number">时长</th></tr></thead><tbody>${rows.map(row => {
     const [symbol, label, color] = eventTypes[row.type] || ['info', row.type, ''];
     const messages = { collector_restart: '采集器重启', sampling_interrupted: '采样间隔中断', sampling_interval_exceeded: '超过有效采样间隔' };
-    return `<tr><td class="muted">${date(row.t, { second: '2-digit' })}</td><td><span class="event-type ${color}">${icon(symbol)}${label}</span></td><td><span class="badge">${row.source === 'gpu' ? 'GPU 采集' : '端口审计'}</span></td><td class="event-message">${esc(messages[row.message] || row.message || (row.type === 'start' ? '采集服务启动' : '采集服务停止'))}</td><td class="number">${row.seconds ? duration(row.seconds) : '—'}</td></tr>`;
+    return `<tr><td class="muted">${date(row.t, { second: '2-digit' })}</td><td><span class="event-type ${color}">${icon(symbol)}${label}</span></td><td><span class="badge">GPU 采集</span></td><td class="event-message">${esc(messages[row.message] || row.message || (row.type === 'start' ? '采集服务启动' : '采集服务停止'))}</td><td class="number">${row.seconds ? duration(row.seconds) : '—'}</td></tr>`;
   }).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条记录</span><span>${TIME_ZONE_LABEL}</span></div>` : empty('circle-check', '该时段暂无运行事件');
 }
 
@@ -178,12 +161,12 @@ function eventsPage() {
 }
 
 function runtimeSection() {
-  return `<section class="runtime-section" aria-label="当前运行状况"><div class="section-heading"><h2>当前运行状况</h2><span class="heading-note">截至 ${date(state.data.generatedAt, { second: '2-digit' })} · 北京时间</span></div>${[['gpu', 'microchip', 'GPU 采集'], ['proxy', 'shield-check', '代理审计']].map(([source, symbol, name]) => {
+  return `<section class="runtime-section" aria-label="当前运行状况"><div class="section-heading"><h2>当前运行状况</h2><span class="heading-note">快照时间 ${date(state.data.generatedAt, { second: '2-digit' })} · 北京时间</span></div><div class="runtime-schedule"><span>节点采样 ${state.data.node.gpuInterval} 秒 / 次</span><span>网站数据更新 ${fmt((state.data.publishInterval || 900) / 60, 0)} 分钟 / 次</span></div>${[['gpu', 'microchip', 'GPU 采集']].map(([source, symbol, name]) => {
     const collector = state.data.collectors?.[source];
     const runtime = collectorRuntime(collector, state.data.generatedAt);
     return `<div class="runtime-row" data-collector="${source}" data-status="${runtime.status}"><div class="runtime-service"><div class="runtime-name">${icon(symbol)}<h3>${name}</h3><span class="runtime-state ${runtime.status}">${runtime.label}</span></div><span class="heading-note">${collector?.intervalSeconds ? `每 ${Number(collector.intervalSeconds).toLocaleString('en-US', { maximumFractionDigits: 3 })} 秒采样` : '采样周期未知'}</span></div>
       <div class="runtime-stat"><span class="runtime-label">本次运行时长</span><strong class="runtime-uptime">${formatUptime(runtime.uptime)}</strong><span class="runtime-meta">启动 ${date(collector?.startedAt, { second: '2-digit' })}</span></div>
-      <div class="runtime-stat"><span class="runtime-label">最近成功采样</span><strong class="runtime-sample">${date(collector?.lastSample, { second: '2-digit' })}</strong><span class="runtime-meta">北京时间</span></div>
+      <div class="runtime-stat"><span class="runtime-label">快照内最近成功采样</span><strong class="runtime-sample">${date(collector?.lastSample, { second: '2-digit' })}</strong><span class="runtime-meta">北京时间</span></div>
       <div class="runtime-stat"><span class="runtime-label">累计成功采样</span><strong class="runtime-count">${collector ? fmt(collector.sampleCount, 0) : '—'}<small>次</small></strong><span class="runtime-meta">${collector?.stoppedAt ? `停止 ${date(collector.stoppedAt, { second: '2-digit' })}` : ''}</span></div></div>`;
   }).join('')}</section>`;
 }
@@ -247,16 +230,16 @@ function render() {
     if (link.dataset.view === view) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
-  $('#main').innerHTML = view === 'overview' ? overview() : view === 'users' ? usersPage() : view === 'gpus' ? heading('GPU 设备') + metrics() + gpuSection(true) : view === 'proxy' ? proxyPage() : eventsPage();
+  $('#main').innerHTML = view === 'overview' ? overview() : view === 'users' ? usersPage() : view === 'gpus' ? heading('GPU 设备') + metrics() + gpuSection(true) : eventsPage();
   $('#sidebarNode').textContent = state.data.node.name;
   $('#sidebarModel').textContent = `${modelName(state.data.node.model)} × ${state.data.node.gpus.length}`;
   $('#navGpuCount').textContent = state.data.node.gpus.length;
-  const bad = state.data.node.problems.length || state.data.audit.problems.length;
+  const bad = state.data.node.problems.length;
   $('#sidebarStatus').classList.toggle('warn', Boolean(bad));
-  $('#eventDot').hidden = !state.data.events.some(event => event.type === 'sample_error');
+  $('#eventDot').hidden = !state.data.events.some(event => event.source === 'gpu' && event.type === 'sample_error');
   $('#footerStatus').textContent = `${bad ? '采样异常' : '采样正常'} · ${fmt(state.data.node.sampleCount, 0)} 次 GPU 采样`;
   $('#footerTime').textContent = `观测起点 ${date(state.data.node.startedAt)} · ${TIME_ZONE_LABEL}`;
-  $('#freshness').textContent = `${date(state.data.generatedAt, { month: undefined, day: undefined })} 更新 · 北京时间`;
+  $('#freshness').textContent = `快照 ${date(state.data.generatedAt, { month: undefined, day: undefined })} · 北京时间`;
   icons();
   drawMainChart();
 }
@@ -284,9 +267,8 @@ function gpuDetail(index) {
 
 function exportCsv() {
   let rows;
-  if (currentView() === 'proxy') rows = [['用户名', 'UID', '端口', '首次观测（北京时间）', '末次观测（北京时间）'], ...state.data.audit.connections.map(row => [row.username || '', row.uid, row.port, date(row.first_seen), date(row.last_seen)])];
-  else if (currentView() === 'gpus') rows = [['GPU', '型号', '利用率%', '显存MiB', '温度°C', '功耗W', '占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUsed, gpu.temperature, gpu.power, gpu.owners.map(owner => owner.name).join(';')])];
-  else if (currentView() === 'events') rows = [['时间（北京时间）', '来源', '类型', '详情', '秒'], ...state.data.events.map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
+  if (currentView() === 'gpus') rows = [['GPU', '型号', '利用率%', '显存MiB', '温度°C', '功耗W', '占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUsed, gpu.temperature, gpu.power, gpu.owners.map(owner => owner.name).join(';')])];
+  else if (currentView() === 'events') rows = [['时间（北京时间）', '来源', '类型', '详情', '秒'], ...state.data.events.filter(row => row.source === 'gpu').map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
   else rows = [['用户名', 'UID', '当前占卡', '区间GPU小时', '共享GPU小时', '累计GPU小时'], ...usageRows().map(row => [row.name, row.uid, row.occupied, row.hours, row.shared, row.totalSeconds / 3600])];
   const csv = '\ufeff' + rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -478,13 +460,12 @@ $('#main').addEventListener('keydown', event => {
   }
 });
 $('#main').addEventListener('input', event => {
-  if (event.target.id === 'userSearch' || event.target.id === 'proxySearch') {
+  if (event.target.id === 'userSearch') {
     state.query = event.target.value;
-    $('#tableContent').innerHTML = event.target.id === 'userSearch' ? usersTable() : proxyTable(); icons();
+    $('#tableContent').innerHTML = usersTable(); icons();
   }
 });
 $('#main').addEventListener('change', event => {
-  if (event.target.id === 'portFilter') { state.port = event.target.value; $('#tableContent').innerHTML = proxyTable(); icons(); }
   if (event.target.id === 'eventFilter') { state.eventFilter = event.target.value; $('#tableContent').innerHTML = eventsTable(); icons(); }
 });
 $('#detailDialog').addEventListener('click', event => { if (event.target.closest('[data-close-dialog]') || event.target === $('#detailDialog')) $('#detailDialog').close(); });

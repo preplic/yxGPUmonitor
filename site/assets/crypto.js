@@ -28,6 +28,6 @@ export async function decrypt(envelope, key) {
   const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('gzip'));
   const value = await new Response(stream).json();
   if (value.schema !== 1 || !Array.isArray(value.allowedUsers) || !Array.isArray(value.history) ||
-      !Array.isArray(value.node?.gpus) || !value.audit) throw new Error('监控快照格式错误');
+      !Array.isArray(value.node?.gpus) || !Array.isArray(value.events)) throw new Error('监控快照格式错误');
   return value;
 }

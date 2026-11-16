@@ -683,6 +683,14 @@ main {
 .runtime-section > .section-heading {
   flex-wrap: wrap;
 }
+.runtime-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+  color: var(--muted);
+  font-size: 11px;
+  margin: -3px 0 18px;
+}
 .runtime-row {
   display: grid;
   grid-template-columns: 1.2fr 1.2fr 1.2fr 1fr;
@@ -1217,32 +1225,6 @@ td.muted {
   font-size: 10px;
   line-height: 1.7;
   margin: 8px 0;
-}
-.coverage-band {
-  margin: 20px 0 28px;
-}
-.coverage-track {
-  position: relative;
-  height: 27px;
-  background: var(--hover);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.coverage-segment {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  background: var(--accent);
-  opacity: 0.65;
-  border-right: 1px solid var(--bg);
-}
-.coverage-axis {
-  display: flex;
-  justify-content: space-between;
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 9px;
 }
 .scope-tags {
   display: flex;

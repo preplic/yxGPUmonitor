@@ -148,10 +148,7 @@ def build_payload(private, now=None):
     sys.path.insert(0, code)
     common = importlib.import_module("monitor_common")
     gpu = importlib.import_module("gpu_usage")
-    proxy = importlib.import_module("bci-proxy-audit")
     state = read_json(Path(cfg["gpu_root"]) / cfg["host"] / "status.json")
-    proxy_state = common.load_json(Path(cfg["proxy_root"]) / cfg["host"] / "status.json", {})
-    audit = proxy.report(cfg, now=now)
     gpu_problems = gpu.health(state, now=now)
     samples, incidents = history(cfg, state, common, now)
     current = state.get("current", {})
@@ -165,11 +162,7 @@ def build_payload(private, now=None):
         if (row.pw_uid == 0 or 1000 <= row.pw_uid < 65534) and row.pw_shell not in
         ("/usr/sbin/nologin", "/sbin/nologin", "/bin/false")]
     accounts = [*accounts, *private.get("extra_allowed_users", [])]
-    incidents += [{"t": item["time"], "source": "proxy", "type": item["type"],
-                   "message": item.get("error") or item.get("reason"),
-                   "seconds": max(0, item.get("end", 0) - item.get("start", 0)) or None}
-                  for item in audit["incidents"]]
-    return {"schema": 1, "generatedAt": now, "allowedUsers": sorted(set(accounts)),
+    return {"schema": 1, "generatedAt": now, "publishInterval": 900, "allowedUsers": sorted(set(accounts)),
             "node": {"name": cfg["host"], "expectedGpus": cfg["expected_gpu_count"],
                      "model": cards[0]["model"] if cards else "NVIDIA GPU", "gpus": cards,
                      "startedAt": state["created_at"], "lastSample": state["last_success_at"],
@@ -177,15 +170,8 @@ def build_payload(private, now=None):
                      "problems": gpu_problems, "ledgerId": state["ledger_id"],
                      "users": {key: {**identity(row), "totalSeconds": row["gpu_seconds"],
                                 "sharedSeconds": row["shared_gpu_seconds"]} for key, row in state["users"].items()}},
-            "collectors": {"gpu": collector_status(state, gpu_problems),
-                           "proxy": collector_status(proxy_state, proxy.health(proxy_state, now=now))},
-            "history": samples, "events": sorted(incidents, key=lambda item: item["t"], reverse=True)[:120],
-            "audit": {"since": audit["since"], "until": audit["until"], "lastSample": audit["last_success_at"],
-                      "problems": audit["problems"], "ports": audit["ports"], "ignoredUids": audit["ignore_uids"],
-                      "coverageSeconds": audit["coverage_seconds"], "coverage": audit["coverage"], "gaps": audit["gaps"],
-                      "connections": [{key: item.get(key) for key in
-                                       ("connection_id", "uid", "username", "port", "first_seen", "last_seen")}
-                                      for item in audit["connections"]]}}
+            "collectors": {"gpu": collector_status(state, gpu_problems)},
+            "history": samples, "events": sorted(incidents, key=lambda item: item["t"], reverse=True)[:120]}
 
 
 def export(private_path=PRIVATE_CONFIG, destination=None):

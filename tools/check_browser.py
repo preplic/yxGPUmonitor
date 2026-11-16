@@ -145,20 +145,27 @@ def main():
             page.locator("[data-export]").click()
         assert downloaded.value.suggested_filename.endswith(".csv")
         checks.append("user search, sorting, details and CSV export work")
-        for view in ("users", "gpus", "proxy", "events"):
+        assert page.locator('[data-view="proxy"]').count() == 0
+        for view in ("users", "gpus", "events"):
             page.locator(f'[data-view="{view}"]').click()
             page.wait_for_timeout(120)
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.screenshot(path=str(artifacts / (view + "-desktop.png")), full_page=True)
-        assert page.locator(".runtime-row").count() == 2
-        for source in ("gpu", "proxy"):
+        assert page.locator(".runtime-row").count() == 1
+        assert "代理" not in page.locator("#app").inner_text()
+        for source in ("gpu",):
             row = page.locator(f'[data-collector="{source}"]')
             assert row.get_attribute("data-status") == "good"
             assert row.locator(".runtime-state").inner_text() == "运行正常"
             assert row.locator(".runtime-uptime").inner_text() != "—"
             assert row.locator(".runtime-sample").inner_text() != "—"
         assert "北京时间" in page.locator(".runtime-section > .section-heading").inner_text()
-        assert "0.5" in page.locator('[data-collector="proxy"]').inner_text()
+        schedule = page.locator(".runtime-schedule").inner_text()
+        assert "节点采样 10 秒" in schedule and "网站数据更新 15 分钟" in schedule
+        assert "快照内最近成功采样" in page.locator(".runtime-row").inner_text()
+        page.evaluate("location.hash='proxy'")
+        page.wait_for_function("() => document.querySelector('#main h1')?.textContent === '集群概览'")
+        page.locator('[data-view="events"]').click()
         runtime_cases = page.evaluate("""async () => {
             const {collectorRuntime,formatUptime}=await import(new URL('assets/runtime.js',location.href));
             const base={running:true,startedAt:9000,lastSample:9999,intervalSeconds:10,problems:[]};
@@ -186,7 +193,7 @@ def main():
         assert page.locator("#eventFilter").input_value() == "start"
         page.locator("#eventFilter").select_option("all")
         checks.append("collector status, runtime, stale/stopped/error handling and event filters are correct")
-        checks.append("all five desktop views fit the viewport")
+        checks.append("four desktop views fit; proxy auditing is removed; sampling and publication are distinct")
         page.locator('[data-view="overview"]').click()
         page.locator("#themeToggle").click()
         page.wait_for_timeout(400)
@@ -205,7 +212,7 @@ def main():
         page.wait_for_timeout(350)
         page.screenshot(path=str(artifacts / "overview-mobile.png"), full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        for view in ("gpus", "users", "proxy", "events", "overview"):
+        for view in ("gpus", "users", "events", "overview"):
             page.locator("#mobileMenu").click()
             page.locator(f'[data-view="{view}"]').click()
             page.wait_for_timeout(150)
@@ -213,7 +220,7 @@ def main():
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             if view == "events":
                 page.screenshot(path=str(artifacts / "events-mobile.png"), full_page=True)
-                assert page.locator(".runtime-row").count() == 2
+                assert page.locator(".runtime-row").count() == 1
                 assert page.locator(".runtime-stat").evaluate_all("elements => elements.every(el => el.scrollWidth <= el.clientWidth)")
         checks.append("mobile navigation and every view fit 390px")
         page.locator("#mobileMenu").click()
