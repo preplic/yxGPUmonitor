@@ -112,6 +112,11 @@ def main():
             assert restored["id"] == record["id"]
             assert restored["expiresAt"] == record["expiresAt"]
         checks.append("reload restores the non-extractable key without extending session expiry")
+        updated = page.locator("#freshness")
+        assert updated.inner_text().startswith("更新时间 ")
+        assert updated.inner_text().endswith(" · 北京时间")
+        assert updated.bounding_box()["x"] + updated.bounding_box()["width"] <= page.locator("#themeToggle").bounding_box()["x"]
+        checks.append("the update timestamp appears immediately left of the theme toggle")
         other_tab = context.new_page()
         other_tab.goto(args.url, wait_until="networkidle")
         assert_logged_out(other_tab)
