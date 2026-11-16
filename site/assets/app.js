@@ -239,7 +239,7 @@ function render() {
   $('#eventDot').hidden = !state.data.events.some(event => event.source === 'gpu' && event.type === 'sample_error');
   $('#footerStatus').textContent = `${bad ? '采样异常' : '采样正常'} · ${fmt(state.data.node.sampleCount, 0)} 次 GPU 采样`;
   $('#footerTime').textContent = `观测起点 ${date(state.data.node.startedAt)} · ${TIME_ZONE_LABEL}`;
-  $('#freshness').textContent = `快照 ${date(state.data.generatedAt, { month: undefined, day: undefined })} · 北京时间`;
+  $('#freshness').textContent = `更新时间 ${date(state.data.generatedAt, { month: undefined, day: undefined })} · 北京时间`;
   icons();
   drawMainChart();
 }
