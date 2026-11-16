@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit, unquote
 
 from playwright.sync_api import sync_playwright
 
@@ -15,15 +16,26 @@ def main():
     parser.add_argument("--browser", required=True)
     parser.add_argument("--config", default=str(Path.home() / ".config/yxgpu-monitor/publish.json"))
     parser.add_argument("--artifacts", default="artifacts")
+    parser.add_argument("--proxy-from-env", action="store_true")
     args = parser.parse_args()
     private = json.loads(Path(args.config).read_text())
     artifacts = Path(args.artifacts)
     artifacts.mkdir(parents=True, exist_ok=True)
     errors = []
     checks = []
+    proxy = None
+    if args.proxy_from_env:
+        address = next((os.environ[name] for name in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY")
+                        if os.environ.get(name)), None)
+        if not address:
+            parser.error("Selected proxy is not configured")
+        parsed = urlsplit(address)
+        proxy = {"server": "%s://%s:%d" % (parsed.scheme, parsed.hostname, parsed.port or 80)}
+        if parsed.username:
+            proxy.update(username=unquote(parsed.username), password=unquote(parsed.password or ""))
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=args.browser, headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"])
+            args=["--no-sandbox", "--disable-dev-shm-usage"], proxy=proxy)
         context = browser.new_context(viewport={"width": 1440, "height": 1050}, device_scale_factor=1)
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))

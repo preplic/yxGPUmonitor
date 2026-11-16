@@ -1,2 +1,52 @@
-:root{--bg:#151719;--sidebar:#111315;--surface:#1a1d20;--surface-hover:#1d2124;--hover:#24282c;--table-head:#191c1f;--border:#2b3035;--border-strong:#41484e;--text:#e8ecef;--secondary:#adb5bc;--muted:#727d87;--accent:#55d6aa;--accent-soft:#55d6aa0d;--accent-border:#55d6aa30;--on-accent:#0e251d;--blue:#6da8f5;--warning:#e9b96b;--warning-soft:#e9b96b0c;--warning-border:#e9b96b35;--danger:#f27b86;--danger-soft:#f27b860d;--danger-border:#f27b8635;--tooltip:#292e33;--tooltip-text:#eef1f4}
-:root[data-theme=light]{--bg:#fafbfc;--sidebar:#f3f5f7;--surface:#fff;--surface-hover:#fcfdfd;--hover:#edf0f3;--table-head:#f5f7f9;--border:#e0e5e9;--border-strong:#c6cfd7;--text:#20282f;--secondary:#566470;--muted:#81909c;--accent:#148263;--accent-soft:#1482630b;--accent-border:#14826330;--on-accent:#fff;--blue:#477bd2;--warning:#9b6c20;--warning-soft:#bf8a2510;--warning-border:#bf8a2540;--danger:#c44258;--danger-soft:#c4425810;--danger-border:#c4425830;--tooltip:#26343e;--tooltip-text:#fff}
+:root {
+  --bg: #151719;
+  --sidebar: #111315;
+  --surface: #1a1d20;
+  --surface-hover: #1d2124;
+  --hover: #24282c;
+  --table-head: #191c1f;
+  --border: #2b3035;
+  --border-strong: #41484e;
+  --text: #e8ecef;
+  --secondary: #adb5bc;
+  --muted: #727d87;
+  --accent: #55d6aa;
+  --accent-soft: #55d6aa0d;
+  --accent-border: #55d6aa30;
+  --on-accent: #0e251d;
+  --blue: #6da8f5;
+  --warning: #e9b96b;
+  --warning-soft: #e9b96b0c;
+  --warning-border: #e9b96b35;
+  --danger: #f27b86;
+  --danger-soft: #f27b860d;
+  --danger-border: #f27b8635;
+  --tooltip: #292e33;
+  --tooltip-text: #eef1f4;
+}
+:root[data-theme="light"] {
+  --bg: #fafbfc;
+  --sidebar: #f3f5f7;
+  --surface: #fff;
+  --surface-hover: #fcfdfd;
+  --hover: #edf0f3;
+  --table-head: #f5f7f9;
+  --border: #e0e5e9;
+  --border-strong: #c6cfd7;
+  --text: #20282f;
+  --secondary: #566470;
+  --muted: #81909c;
+  --accent: #148263;
+  --accent-soft: #1482630b;
+  --accent-border: #14826330;
+  --on-accent: #fff;
+  --blue: #477bd2;
+  --warning: #9b6c20;
+  --warning-soft: #bf8a2510;
+  --warning-border: #bf8a2540;
+  --danger: #c44258;
+  --danger-soft: #c4425810;
+  --danger-border: #c4425830;
+  --tooltip: #26343e;
+  --tooltip-text: #fff;
+}
