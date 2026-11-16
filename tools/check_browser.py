@@ -2,6 +2,7 @@
 """Exercise authentication, real charts and responsive views without logging secrets."""
 
 import argparse
+import csv
 import json
 import os
 from pathlib import Path
@@ -124,6 +125,28 @@ def main():
         checks.append("a fresh tab cannot reuse another tab's saved session")
         page.wait_for_timeout(600)
         assert page.locator(".gpu-card").count() == 8
+        averages = page.evaluate("""async () => {
+            const {loadSession}=await import(new URL('assets/session.js',location.href));
+            const {decrypt}=await import(new URL('assets/crypto.js',location.href));
+            const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
+            const saved=await loadSession();const data=await decrypt(envelope,saved.key);
+            const format=n=>Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:0,minimumFractionDigits:0}):'—';
+            return {
+                validWindow:data.node.metricWindow.start<data.node.metricWindow.end && data.node.metricWindow.end===data.generatedAt,
+                labels:document.querySelector('.gpu-period').textContent.startsWith('区间平均 · ') &&
+                    document.querySelector('.gpu-period').textContent.endsWith(' · 北京时间'),
+                cards:data.node.gpus.every(gpu=>{
+                    const meters=document.querySelector(`[data-gpu="${gpu.index}"]`).querySelectorAll('.gpu-meter');
+                    return meters[0].querySelector('b').textContent.trim()===format(gpu.utilization)+' %' &&
+                        meters[1].querySelector('b').textContent.trim()===format(gpu.memoryUtilization)+' %' &&
+                        Math.abs(parseFloat(meters[0].querySelector('.meter-track span').style.width)-(gpu.utilization||0))<0.001 &&
+                        Math.abs(parseFloat(meters[1].querySelector('.meter-track span').style.width)-(gpu.memoryUtilization||0))<0.001;
+                }),
+                sampled:data.node.gpus.every(gpu=>gpu.metricSamples>1 && gpu.metricCoverage.utilization>0)
+            };
+        }""")
+        assert all(averages.values()), averages
+        checks.append("all GPU meters match interval averages; the Beijing-time averaging window is visible")
         assert page.locator("#password").input_value() == ""
         canvas = page.evaluate("""() => { const canvas=document.querySelector('#occupancyChart canvas');
             const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
@@ -136,6 +159,9 @@ def main():
         page.locator('[data-chart-mode="users"]').click()
         page.locator('[data-gpu="0"]').click()
         assert page.locator("#detailDialog").is_visible()
+        assert "平均利用率" in page.locator("#detailDialog").inner_text()
+        assert "平均显存占用率" in page.locator("#detailDialog").inner_text()
+        assert "有效采样" in page.locator("#detailDialog").inner_text()
         page.locator("[data-close-dialog]").click()
         checks.append("time range, user chart and GPU detail work")
         page.locator('[data-view="users"]').click()
@@ -156,6 +182,14 @@ def main():
             page.wait_for_timeout(120)
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.screenshot(path=str(artifacts / (view + "-desktop.png")), full_page=True)
+            if view == "gpus":
+                with page.expect_download() as gpu_download:
+                    page.locator("[data-export]").click()
+                with Path(gpu_download.value.path()).open(encoding="utf-8-sig", newline="") as handle:
+                    rows = list(csv.reader(handle))
+                assert rows[0][2:5] == ["平均利用率%", "平均显存占用率%", "平均显存MiB"]
+                assert "区间开始（北京时间）" in rows[0] and len(rows) == 9
+                checks.append("GPU CSV exports interval averages and Beijing-time window boundaries")
         assert page.locator(".runtime-row").count() == 1
         assert "代理" not in page.locator("#app").inner_text()
         for source in ("gpu",):

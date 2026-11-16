@@ -29,6 +29,7 @@ def main():
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / "publish.lock").open("w") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = None
         if args.push:
             if git("branch", "--show-current", output=True) != "main":
                 raise ValueError("Publishing requires the main branch")
@@ -36,7 +37,8 @@ def main():
                 raise ValueError("Unrelated staged changes found; publish aborted")
             git("fetch", "origin", "main")
             git("merge", "--ff-only", "origin/main")
-        result = export(args.config)
+            previous = json.loads(git("show", "origin/main:site/data/snapshot.enc.json", output=True))
+        result = export(args.config, previous_snapshot=previous)
         check(args.config)
         print(json.dumps({"at": time.time(), **result}), flush=True)
         if args.push:

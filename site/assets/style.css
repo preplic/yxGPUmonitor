@@ -901,6 +901,11 @@ main {
 .text-link:hover {
   color: var(--accent);
 }
+.gpu-period {
+  margin: -4px 0 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .gpu-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

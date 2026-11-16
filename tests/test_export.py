@@ -9,7 +9,7 @@ import export_data
 
 
 class CollectorExportTests(unittest.TestCase):
-    def build(self, private=None):
+    def build(self, private=None, previous_generated_at=None, cards=None, averages=None):
         cfg = {"host": "test-node", "gpu_root": "/unused/gpu",
                "expected_gpu_count": 8, "gpu_interval": 10}
         gpu_state = {"created_at": 100, "started_at": 900, "running": True,
@@ -22,9 +22,10 @@ class CollectorExportTests(unittest.TestCase):
                 patch.object(export_data.sys, "path", []), \
                 patch.object(export_data.importlib, "import_module", side_effect=modules.__getitem__), \
                 patch.object(export_data, "read_json", return_value=gpu_state), \
-                patch.object(export_data, "history", return_value=([], [])), \
-                patch.object(export_data, "gpu_metrics", return_value=[]):
-            return export_data.build_payload(private or {"allowed_users": ["test-account"]}, now=1000)
+                patch.object(export_data, "history", return_value=([], [], averages or {})), \
+                patch.object(export_data, "gpu_metrics", return_value=cards or []):
+            return export_data.build_payload(private or {"allowed_users": ["test-account"]}, now=1000,
+                                             previous_generated_at=previous_generated_at)
 
     def test_gpu_restart_keeps_ledger_origin_and_uses_current_run_start_time(self):
         payload = self.build()
@@ -46,6 +47,31 @@ class CollectorExportTests(unittest.TestCase):
         self.assertEqual(payload["generatedAt"], 1000)
         self.assertEqual(payload["collectors"]["gpu"]["lastSample"], 995)
 
+    def test_metrics_use_actual_previous_update_time_instead_of_fixed_fifteen_minutes(self):
+        payload = self.build(previous_generated_at=75)
+        self.assertEqual(payload["node"]["metricWindow"], {"start": 75, "end": 1000})
+
+    def test_previous_update_in_the_future_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.build(previous_generated_at=1001)
+
+    def test_missing_samples_do_not_fall_back_to_instantaneous_metrics(self):
+        cards = [{"uuid": "g", "model": "test GPU", "memoryUsed": 999, "utilization": 99}]
+        payload = self.build(cards=cards)
+        card = payload["node"]["gpus"][0]
+        self.assertIsNone(card["memoryUsed"])
+        self.assertIsNone(card["memoryUtilization"])
+        self.assertIsNone(card["utilization"])
+        self.assertEqual(card["metricSamples"], 0)
+
+    def test_average_metrics_replace_publication_instant_values(self):
+        cards = [{"uuid": "g", "model": "test GPU", "memoryUsed": 999, "utilization": 99}]
+        averages = {"g": {"memoryUsed": 200, "memoryUtilization": 20, "utilization": 30}}
+        card = self.build(cards=cards, averages=averages)["node"]["gpus"][0]
+        self.assertEqual(card["memoryUsed"], 200)
+        self.assertEqual(card["memoryUtilization"], 20)
+        self.assertEqual(card["utilization"], 30)
+
     def test_extra_users_preserve_existing_accounts_and_remove_duplicates(self):
         payload = self.build({"allowed_users": ["test-account"],
                                   "extra_allowed_users": ["extra-account", "test-account"]})
@@ -57,6 +83,65 @@ class CollectorExportTests(unittest.TestCase):
         with patch.object(export_data.pwd, "getpwall", return_value=accounts):
             payload = self.build({"extra_allowed_users": ["extra-account"]})
         self.assertEqual(payload["allowedUsers"], ["extra-account", "server-account"])
+
+
+class AverageMetricTests(unittest.TestCase):
+    def observation(self, t, util, used, uuid="g"):
+        return t, [{"uuid": uuid, "memory_total": 1000, "memory_used": used, "utilization": util}]
+
+    def average(self, observations, start=100, end=130):
+        return export_data.averaged_metrics(observations, start, end, 10)["g"]
+
+    def test_time_weighted_average_clips_both_window_boundaries(self):
+        values = [self.observation(95, 20, 100), self.observation(110, 80, 400),
+                  self.observation(125, 0, 1000), self.observation(135, 100, 0)]
+        result = self.average(values)
+        self.assertAlmostEqual(result["utilization"], (20 * 10 + 80 * 15) / 30)
+        self.assertAlmostEqual(result["memoryUsed"], (100 * 10 + 400 * 15 + 1000 * 5) / 30)
+        self.assertAlmostEqual(result["memoryUtilization"], (10 * 10 + 40 * 15 + 100 * 5) / 30)
+        self.assertEqual(result["metricSamples"], 3)
+        self.assertEqual(result["metricCoverage"]["utilization"], 30)
+
+    def test_missing_fields_do_not_count_as_zero_but_real_zero_is_valid(self):
+        values = [self.observation(100, 0, None), self.observation(110, None, 400)]
+        result = self.average(values, end=120)
+        self.assertEqual(result["utilization"], 0)
+        self.assertEqual(result["memoryUsed"], 400)
+        self.assertEqual(result["memoryUtilization"], 40)
+        self.assertEqual(result["metricCoverage"], {"utilization": 10, "memoryUsed": 10, "memoryUtilization": 10})
+
+    def test_sampling_gap_is_excluded_from_the_denominator(self):
+        values = [self.observation(100, 100, 1000), self.observation(200, 20, 200)]
+        result = self.average(values, end=210)
+        self.assertEqual(result["utilization"], 20)
+        self.assertEqual(result["memoryUsed"], 200)
+        self.assertEqual(result["metricCoverage"]["utilization"], 10)
+
+    def test_known_stop_does_not_extend_the_last_value_to_the_end(self):
+        result = self.average([self.observation(100, 80, 600), (105, [])], end=120)
+        self.assertEqual(result["metricCoverage"]["utilization"], 5)
+        self.assertEqual(result["utilization"], 80)
+
+    def test_old_log_format_does_not_add_zero_metrics(self):
+        values = [(100, [{"uuid": "g"}]), self.observation(110, 60, 300)]
+        result = self.average(values, end=120)
+        self.assertEqual(result["utilization"], 60)
+        self.assertEqual(result["memoryUtilization"], 30)
+        self.assertEqual(result["metricSamples"], 1)
+
+    def test_duplicate_status_and_event_observation_is_counted_once(self):
+        observation = self.observation(100, 30, 200)
+        result = self.average([observation, observation], end=110)
+        self.assertEqual(result["metricSamples"], 1)
+        self.assertEqual(result["metricCoverage"]["memoryUsed"], 10)
+
+    def test_invalid_values_are_missing_and_cards_are_grouped_by_uuid(self):
+        values = [self.observation(100, float("nan"), None), self.observation(110, 200, None),
+                  self.observation(115, 75, 400, uuid="other")]
+        result = export_data.averaged_metrics(values, 100, 120, 10)
+        self.assertIsNone(result["g"]["utilization"])
+        self.assertIsNone(result["g"]["memoryUsed"])
+        self.assertEqual(result["other"]["utilization"], 75)
 
 
 if __name__ == "__main__":

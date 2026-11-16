@@ -55,6 +55,12 @@ class EncryptionTests(unittest.TestCase):
         self.assertNotEqual(first["ciphertext"], second["ciphertext"])
         self.assertEqual(first["salt"], second["salt"])
 
+    def test_previous_snapshot_boundary_is_read_from_authenticated_payload(self):
+        envelope = export_data.encrypted({**self.payload, "generatedAt": 1234.5}, self.password, self.salt)
+        self.assertEqual(export_data.snapshot_time(envelope, self.password), 1234.5)
+        with self.assertRaises(InvalidTag):
+            export_data.snapshot_time(envelope, "incorrect")
+
     def test_sample_deduplicates_occupancy_and_drops_pid(self):
         state = {"last_success_at": 123, "current": {"owners": {"g": {"42:u": {"uid": 42}}},
                  "processes": [{"gpu_uuid": "g", "pid": 99}, {"gpu_uuid": "g", "pid": 100}]},
