@@ -1,4 +1,5 @@
 import { deriveKey, decrypt } from './crypto.js';
+import { formatTime as date, formatFileDate, TIME_ZONE_LABEL } from './time.js';
 
 const $ = (query, root = document) => root.querySelector(query);
 const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' } });
@@ -8,19 +9,13 @@ const palette = ['#55d6aa', '#e9b96b', '#a899ef', '#6da8f5', '#f58d9a', '#7ac8d6
 const views = { overview: '监控总览', gpus: 'GPU 设备', users: '用户用量', proxy: '代理审计', events: '运行记录' };
 const modelName = value => value.replace('NVIDIA ', '').replace('-SXM4-40GB', '');
 const state = { data: null, key: null, envelope: null, user: '', hours: 24, mode: 'busy',
-  query: '', port: 'all', eventFilter: 'all', sort: 'hours', descending: true, charts: [], timeZone: 'Asia/Singapore' };
+  query: '', port: 'all', eventFilter: 'all', sort: 'hours', descending: true, charts: [] };
 let refreshing = false;
 let toastTimer;
 let chartObserver;
 
 function fmt(value, digits = 1) {
   return Number.isFinite(Number(value)) && value !== null ? Number(value).toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }) : '—';
-}
-
-function date(value, options = {}) {
-  if (!Number.isFinite(value)) return '—';
-  return new Intl.DateTimeFormat('zh-CN', { timeZone: state.timeZone, month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false, ...options }).format(new Date(value * 1000));
 }
 
 function duration(seconds) {
@@ -103,7 +98,7 @@ function chartPanel(full = false) {
   const legend = userMode ? Object.values(state.data.node.users).map((user, index) => [user.name, palette[index % palette.length]]) : [['物理卡占用', palette[0]], ['用户占卡合计', palette[1]]];
   return `<section class="chart-tool ${full ? 'full-chart' : ''}"><div class="tool-heading"><h2>GPU 占用趋势 <span class="heading-note">/ 卡</span></h2><div class="segmented" aria-label="图表维度"><button data-chart-mode="busy" class="${!userMode ? 'selected' : ''}" aria-pressed="${!userMode}">占用</button><button data-chart-mode="users" class="${userMode ? 'selected' : ''}" aria-pressed="${userMode}">按用户</button></div></div>
     <div class="chart-legend">${legend.map(([label, color]) => `<span><i class="legend-dot" style="background:${color}"></i>${esc(label)}</span>`).join('')}</div><div id="occupancyChart" class="occupancy-chart" role="img" aria-label="GPU 占卡时间趋势"></div>
-    <div class="plot-foot"><span>${date(bounds().first.t)} — ${date(bounds().last.t)}</span><span>UTC+08:00</span></div></section>`;
+    <div class="plot-foot"><span>${date(bounds().first.t)} — ${date(bounds().last.t)}</span><span>${TIME_ZONE_LABEL}</span></div></section>`;
 }
 
 function rankings() {
@@ -148,7 +143,7 @@ function usersPage() {
 function proxyTable() {
   const rows = state.data.audit.connections.filter(row => (state.port === 'all' || String(row.port) === state.port) &&
     (!state.query || `${row.username} ${row.uid}`.toLowerCase().includes(state.query.toLowerCase())));
-  return rows.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>UID</th><th>目标端口</th><th>首次观测</th><th>末次观测</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.username || 'uid:' + row.uid)}</td><td class="muted">${row.uid}</td><td><span class="badge">${row.port}</span></td><td>${date(row.first_seen, { second: '2-digit' })}</td><td>${date(row.last_seen, { second: '2-digit' })}</td></tr>`).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条连接记录</span><span>UTC+08:00</span></div>` : empty('shield-check', state.query || state.port !== 'all' ? '没有匹配的连接记录' : '已覆盖时段未观测到连接', `${date(state.data.audit.since)} — ${date(state.data.audit.until)}`);
+  return rows.length ? `<div class="table-wrap"><table><thead><tr><th>用户</th><th>UID</th><th>目标端口</th><th>首次观测</th><th>末次观测</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.username || 'uid:' + row.uid)}</td><td class="muted">${row.uid}</td><td><span class="badge">${row.port}</span></td><td>${date(row.first_seen, { second: '2-digit' })}</td><td>${date(row.last_seen, { second: '2-digit' })}</td></tr>`).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条连接记录</span><span>${TIME_ZONE_LABEL}</span></div>` : empty('shield-check', state.query || state.port !== 'all' ? '没有匹配的连接记录' : '已覆盖时段未观测到连接', `${date(state.data.audit.since)} — ${date(state.data.audit.until)}`);
 }
 
 function proxyPage() {
@@ -170,7 +165,7 @@ function eventsTable() {
     const [symbol, label, color] = eventTypes[row.type] || ['info', row.type, ''];
     const messages = { collector_restart: '采集器重启', sampling_interrupted: '采样间隔中断', sampling_interval_exceeded: '超过有效采样间隔' };
     return `<tr><td class="muted">${date(row.t, { second: '2-digit' })}</td><td><span class="event-type ${color}">${icon(symbol)}${label}</span></td><td><span class="badge">${row.source === 'gpu' ? 'GPU 采集' : '端口审计'}</span></td><td class="event-message">${esc(messages[row.message] || row.message || (row.type === 'start' ? '采集服务启动' : '采集服务停止'))}</td><td class="number">${row.seconds ? duration(row.seconds) : '—'}</td></tr>`;
-  }).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条记录</span><span>UTC+08:00</span></div>` : empty('circle-check', '该时段暂无运行事件');
+  }).join('')}</tbody></table></div><div class="table-foot"><span>${rows.length} 条记录</span><span>${TIME_ZONE_LABEL}</span></div>` : empty('circle-check', '该时段暂无运行事件');
 }
 
 function eventsPage() {
@@ -239,8 +234,8 @@ function render() {
   $('#sidebarStatus').classList.toggle('warn', Boolean(bad));
   $('#eventDot').hidden = !state.data.events.some(event => event.type === 'sample_error');
   $('#footerStatus').textContent = `${bad ? '采样异常' : '采样正常'} · ${fmt(state.data.node.sampleCount, 0)} 次 GPU 采样`;
-  $('#footerTime').textContent = `观测起点 ${date(state.data.node.startedAt)} · UTC+08:00`;
-  $('#freshness').textContent = `${date(state.data.generatedAt, { month: undefined, day: undefined })} 更新`;
+  $('#footerTime').textContent = `观测起点 ${date(state.data.node.startedAt)} · ${TIME_ZONE_LABEL}`;
+  $('#freshness').textContent = `${date(state.data.generatedAt, { month: undefined, day: undefined })} 更新 · 北京时间`;
   icons();
   drawMainChart();
 }
@@ -268,15 +263,15 @@ function gpuDetail(index) {
 
 function exportCsv() {
   let rows;
-  if (currentView() === 'proxy') rows = [['用户名', 'UID', '端口', '首次观测', '末次观测'], ...state.data.audit.connections.map(row => [row.username || '', row.uid, row.port, date(row.first_seen), date(row.last_seen)])];
+  if (currentView() === 'proxy') rows = [['用户名', 'UID', '端口', '首次观测（北京时间）', '末次观测（北京时间）'], ...state.data.audit.connections.map(row => [row.username || '', row.uid, row.port, date(row.first_seen), date(row.last_seen)])];
   else if (currentView() === 'gpus') rows = [['GPU', '型号', '利用率%', '显存MiB', '温度°C', '功耗W', '占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUsed, gpu.temperature, gpu.power, gpu.owners.map(owner => owner.name).join(';')])];
-  else if (currentView() === 'events') rows = [['时间', '来源', '类型', '详情', '秒'], ...state.data.events.map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
+  else if (currentView() === 'events') rows = [['时间（北京时间）', '来源', '类型', '详情', '秒'], ...state.data.events.map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
   else rows = [['用户名', 'UID', '当前占卡', '区间GPU小时', '共享GPU小时', '累计GPU小时'], ...usageRows().map(row => [row.name, row.uid, row.occupied, row.hours, row.shared, row.totalSeconds / 3600])];
   const csv = '\ufeff' + rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const anchor = document.createElement('a');
   anchor.href = url;
-  anchor.download = `yxgpu-${currentView()}-${new Date(state.data.generatedAt * 1000).toISOString().slice(0, 10)}.csv`;
+  anchor.download = `yxgpu-${currentView()}-${formatFileDate(state.data.generatedAt)}.csv`;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

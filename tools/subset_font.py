@@ -11,7 +11,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("source")
 args = parser.parse_args()
 site = Path(__file__).resolve().parents[1] / "site"
-text = "".join(path.read_text() for path in [site / "index.html", site / "assets/app.js", site / "assets/crypto.js"])
+text = "".join(path.read_text() for path in [site / "index.html", *sorted((site / "assets").glob("*.js"))])
 text += "".join(chr(value) for value in range(32, 127))
 font = TTFont(args.source)
 options = subset.Options()
