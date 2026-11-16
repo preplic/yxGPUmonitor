@@ -1,6 +1,7 @@
 import { deriveKey, decrypt } from './crypto.js';
 import { formatTime as date, formatFileDate, TIME_ZONE_LABEL } from './time.js';
 import { SESSION_LIFETIME, loadSession, saveSession, clearSession } from './session.js';
+import { collectorRuntime, formatUptime } from './runtime.js';
 
 const $ = (query, root = document) => root.querySelector(query);
 const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' } });
@@ -173,7 +174,23 @@ function eventsTable() {
 }
 
 function eventsPage() {
-  return heading('运行记录') + `<div class="filter-bar"><span class="heading-note">采集器生命周期与采样异常</span><select id="eventFilter" aria-label="筛选事件"><option value="all">全部事件</option>${Object.entries(eventTypes).map(([key, [, label]]) => `<option value="${key}" ${state.eventFilter === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div id="tableContent">${eventsTable()}</div>`;
+  return heading('运行记录') + `<div id="runtimeStatus">${runtimeSection()}</div><div class="section-heading"><h2>历史事件</h2><select id="eventFilter" aria-label="筛选事件"><option value="all">全部事件</option>${Object.entries(eventTypes).map(([key, [, label]]) => `<option value="${key}" ${state.eventFilter === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div><div id="tableContent">${eventsTable()}</div>`;
+}
+
+function runtimeSection() {
+  return `<section class="runtime-section" aria-label="当前运行状况"><div class="section-heading"><h2>当前运行状况</h2><span class="heading-note">截至 ${date(state.data.generatedAt, { second: '2-digit' })} · 北京时间</span></div>${[['gpu', 'microchip', 'GPU 采集'], ['proxy', 'shield-check', '代理审计']].map(([source, symbol, name]) => {
+    const collector = state.data.collectors?.[source];
+    const runtime = collectorRuntime(collector, state.data.generatedAt);
+    return `<div class="runtime-row" data-collector="${source}" data-status="${runtime.status}"><div class="runtime-service"><div class="runtime-name">${icon(symbol)}<h3>${name}</h3><span class="runtime-state ${runtime.status}">${runtime.label}</span></div><span class="heading-note">${collector?.intervalSeconds ? `每 ${Number(collector.intervalSeconds).toLocaleString('en-US', { maximumFractionDigits: 3 })} 秒采样` : '采样周期未知'}</span></div>
+      <div class="runtime-stat"><span class="runtime-label">本次运行时长</span><strong class="runtime-uptime">${formatUptime(runtime.uptime)}</strong><span class="runtime-meta">启动 ${date(collector?.startedAt, { second: '2-digit' })}</span></div>
+      <div class="runtime-stat"><span class="runtime-label">最近成功采样</span><strong class="runtime-sample">${date(collector?.lastSample, { second: '2-digit' })}</strong><span class="runtime-meta">北京时间</span></div>
+      <div class="runtime-stat"><span class="runtime-label">累计成功采样</span><strong class="runtime-count">${collector ? fmt(collector.sampleCount, 0) : '—'}<small>次</small></strong><span class="runtime-meta">${collector?.stoppedAt ? `停止 ${date(collector.stoppedAt, { second: '2-digit' })}` : ''}</span></div></div>`;
+  }).join('')}</section>`;
+}
+
+function updateRuntimeStatus() {
+  const element = $('#runtimeStatus');
+  if (state.data && element) { element.innerHTML = runtimeSection(); icons(); }
 }
 
 function disposeCharts() {
@@ -476,7 +493,8 @@ $('#detailDialog').addEventListener('close', () => {
   if (element) { const chart = echarts.getInstanceByDom(element); chart?.dispose(); state.charts = state.charts.filter(item => !item.isDisposed()); }
 });
 window.addEventListener('hashchange', () => { state.query = ''; closeMenu(); if ($('#detailDialog').open) $('#detailDialog').close(); render(); window.scrollTo({ top: 0 }); });
-setInterval(() => { if ($('#autoRefresh').checked && !document.hidden) refresh(); }, 60000);
+setInterval(() => { updateRuntimeStatus(); if ($('#autoRefresh').checked && !document.hidden) refresh(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRuntimeStatus(); });
 function checkExpiry() { if (state.key && Date.now() >= state.expiresAt) logout('会话已到期，请重新登录'); }
 document.addEventListener('visibilitychange', checkExpiry);
 window.addEventListener('pageshow', checkExpiry);

@@ -677,6 +677,89 @@ main {
 .text-danger {
   color: var(--danger);
 }
+.runtime-section {
+  margin-bottom: 30px;
+}
+.runtime-section > .section-heading {
+  flex-wrap: wrap;
+}
+.runtime-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1.2fr 1.2fr 1fr;
+  gap: 18px;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+}
+.runtime-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+.runtime-service,
+.runtime-stat {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.runtime-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.runtime-name > svg {
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+.runtime-name h3 {
+  font-size: 12px;
+  font-weight: 550;
+  margin: 0;
+}
+.runtime-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.runtime-state::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.runtime-state.good { color: var(--accent); }
+.runtime-state.warn { color: var(--warning); }
+.runtime-state.bad { color: var(--danger); }
+.runtime-label {
+  font-size: 10px;
+  color: var(--secondary);
+}
+.runtime-stat strong {
+  font-size: 19px;
+  font-weight: 550;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.runtime-stat .runtime-sample {
+  font-size: 14px;
+}
+.runtime-count small {
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 6px;
+  font-weight: 400;
+}
+.runtime-meta {
+  color: var(--muted);
+  font-size: 10px;
+  min-height: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
 .overview-plots {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 290px;
@@ -1351,6 +1434,9 @@ td.muted {
   }
 }
 @media (max-width: 900px) {
+  .runtime-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .sidebar {
     width: 170px;
     padding-left: 9px;
@@ -1402,6 +1488,17 @@ td.muted {
   }
 }
 @media (max-width: 680px) {
+  .runtime-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px 12px;
+    padding: 20px 0;
+  }
+  .runtime-stat strong {
+    font-size: 18px;
+  }
+  .runtime-stat .runtime-sample {
+    font-size: 13px;
+  }
   .sidebar {
     transform: translateX(-100%);
     width: 215px;

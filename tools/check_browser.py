@@ -150,12 +150,51 @@ def main():
             page.wait_for_timeout(120)
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
             page.screenshot(path=str(artifacts / (view + "-desktop.png")), full_page=True)
+        assert page.locator(".runtime-row").count() == 2
+        for source in ("gpu", "proxy"):
+            row = page.locator(f'[data-collector="{source}"]')
+            assert row.get_attribute("data-status") == "good"
+            assert row.locator(".runtime-state").inner_text() == "运行正常"
+            assert row.locator(".runtime-uptime").inner_text() != "—"
+            assert row.locator(".runtime-sample").inner_text() != "—"
+        assert "北京时间" in page.locator(".runtime-section > .section-heading").inner_text()
+        assert "0.5" in page.locator('[data-collector="proxy"]').inner_text()
+        runtime_cases = page.evaluate("""async () => {
+            const {collectorRuntime,formatUptime}=await import(new URL('assets/runtime.js',location.href));
+            const base={running:true,startedAt:9000,lastSample:9999,intervalSeconds:10,problems:[]};
+            return {
+                normal:collectorRuntime(base,10000,10000),
+                stopped:collectorRuntime({...base,running:false,stoppedAt:9500},10000,10000),
+                missingStop:collectorRuntime({...base,running:false},10000,10000),
+                stale:collectorRuntime(base,10000,12200),
+                lagging:collectorRuntime({...base,lastSample:9900},10000,10000),
+                error:collectorRuntime({...base,problems:['error']},10000,10000),
+                missing:collectorRuntime(null,10000,10000),
+                missingStart:collectorRuntime({...base,startedAt:null},10000,10000),
+                duration:formatUptime(90061)
+            };
+        }""")
+        assert runtime_cases["normal"]["status"] == "good" and runtime_cases["normal"]["uptime"] == 1000
+        assert runtime_cases["stopped"]["status"] == "bad" and runtime_cases["stopped"]["uptime"] == 500
+        assert runtime_cases["missingStop"]["uptime"] is None
+        assert runtime_cases["stale"]["status"] == "unknown" and runtime_cases["stale"]["uptime"] == 1000
+        assert runtime_cases["lagging"]["status"] == "warn" and runtime_cases["error"]["status"] == "warn"
+        assert runtime_cases["missing"]["status"] == "unknown" and runtime_cases["missingStart"]["uptime"] is None
+        assert runtime_cases["duration"] == "1 天 1 时 1 分"
+        page.locator("#eventFilter").select_option("start")
+        page.locator('[data-range="168"]').click()
+        assert page.locator("#eventFilter").input_value() == "start"
+        page.locator("#eventFilter").select_option("all")
+        checks.append("collector status, runtime, stale/stopped/error handling and event filters are correct")
         checks.append("all five desktop views fit the viewport")
         page.locator('[data-view="overview"]').click()
         page.locator("#themeToggle").click()
         page.wait_for_timeout(400)
         assert page.locator("html").get_attribute("data-theme") == "light"
         page.screenshot(path=str(artifacts / "overview-light.png"), full_page=True)
+        page.locator('[data-view="events"]').click()
+        page.screenshot(path=str(artifacts / "events-light.png"), full_page=True)
+        page.locator('[data-view="overview"]').click()
         page.locator("#themeToggle").click()
         assert page.evaluate("JSON.stringify({...localStorage})").find(private["password"]) == -1
         assert page.evaluate("Object.keys(sessionStorage)") == ["yxgpu-session"]
@@ -172,6 +211,10 @@ def main():
             page.wait_for_timeout(150)
             assert not page.locator("#sidebar").evaluate("el => el.classList.contains('open')")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            if view == "events":
+                page.screenshot(path=str(artifacts / "events-mobile.png"), full_page=True)
+                assert page.locator(".runtime-row").count() == 2
+                assert page.locator(".runtime-stat").evaluate_all("elements => elements.every(el => el.scrollWidth <= el.clientWidth)")
         checks.append("mobile navigation and every view fit 390px")
         page.locator("#mobileMenu").click()
         page.locator("#logout").click()

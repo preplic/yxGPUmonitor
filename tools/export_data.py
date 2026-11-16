@@ -82,6 +82,13 @@ def identity(row):
     return {"uid": row["uid"], "name": row.get("username") or "uid:%s" % row["uid"]}
 
 
+def collector_status(state, problems):
+    return {"running": state.get("running"), "startedAt": state.get("started_at"),
+            "stoppedAt": state.get("stopped_at"), "lastSample": state.get("last_success_at"),
+            "sampleCount": state.get("sample_count", 0),
+            "intervalSeconds": state.get("interval_seconds"), "problems": problems}
+
+
 def point(state):
     current = state.get("current", {})
     users = {}
@@ -143,7 +150,9 @@ def build_payload(private, now=None):
     gpu = importlib.import_module("gpu_usage")
     proxy = importlib.import_module("bci-proxy-audit")
     state = read_json(Path(cfg["gpu_root"]) / cfg["host"] / "status.json")
+    proxy_state = common.load_json(Path(cfg["proxy_root"]) / cfg["host"] / "status.json", {})
     audit = proxy.report(cfg, now=now)
+    gpu_problems = gpu.health(state, now=now)
     samples, incidents = history(cfg, state, common, now)
     current = state.get("current", {})
     cards = gpu_metrics()
@@ -164,9 +173,11 @@ def build_payload(private, now=None):
                      "model": cards[0]["model"] if cards else "NVIDIA GPU", "gpus": cards,
                      "startedAt": state["created_at"], "lastSample": state["last_success_at"],
                      "sampleCount": state["sample_count"], "gpuInterval": cfg["gpu_interval"],
-                     "problems": gpu.health(state), "ledgerId": state["ledger_id"],
+                     "problems": gpu_problems, "ledgerId": state["ledger_id"],
                      "users": {key: {**identity(row), "totalSeconds": row["gpu_seconds"],
                                 "sharedSeconds": row["shared_gpu_seconds"]} for key, row in state["users"].items()}},
+            "collectors": {"gpu": collector_status(state, gpu_problems),
+                           "proxy": collector_status(proxy_state, proxy.health(proxy_state, now=now))},
             "history": samples, "events": sorted(incidents, key=lambda item: item["t"], reverse=True)[:120],
             "audit": {"since": audit["since"], "until": audit["until"], "lastSample": audit["last_success_at"],
                       "problems": audit["problems"], "ports": audit["ports"], "ignoredUids": audit["ignore_uids"],
