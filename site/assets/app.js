@@ -1,5 +1,6 @@
 import { deriveKey, decrypt } from './crypto.js';
 import { formatTime as date, formatFileDate, TIME_ZONE_LABEL } from './time.js';
+import { SESSION_LIFETIME, loadSession, saveSession, clearSession } from './session.js';
 
 const $ = (query, root = document) => root.querySelector(query);
 const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' } });
@@ -8,11 +9,14 @@ const icon = name => `<i data-lucide="${name}"></i>`;
 const palette = ['#55d6aa', '#e9b96b', '#a899ef', '#6da8f5', '#f58d9a', '#7ac8d6'];
 const views = { overview: '监控总览', gpus: 'GPU 设备', users: '用户用量', proxy: '代理审计', events: '运行记录' };
 const modelName = value => value.replace('NVIDIA ', '').replace('-SXM4-40GB', '');
-const state = { data: null, key: null, envelope: null, user: '', hours: 24, mode: 'busy',
+const state = { data: null, key: null, envelope: null, user: '', expiresAt: 0, hours: 24, mode: 'busy',
   query: '', port: 'all', eventFilter: 'all', sort: 'hours', descending: true, charts: [] };
 let refreshing = false;
 let toastTimer;
 let chartObserver;
+let authGeneration = 0;
+let authBusy = false;
+let expiryTimer;
 
 function fmt(value, digits = 1) {
   return Number.isFinite(Number(value)) && value !== null ? Number(value).toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits }) : '—';
@@ -283,6 +287,9 @@ async function fetchEnvelope() {
 }
 
 function logout(message = '') {
+  authGeneration++;
+  clearTimeout(expiryTimer);
+  void clearSession();
   closeMenu();
   disposeCharts();
   if ($('#detailDialog').open) $('#detailDialog').close();
@@ -291,8 +298,14 @@ function logout(message = '') {
   state.key = null;
   state.envelope = null;
   state.user = '';
+  state.expiresAt = 0;
   state.query = '';
   $('#main').replaceChildren();
+  for (const id of ['sessionUser', 'sidebarNode', 'sidebarModel', 'footerStatus', 'footerTime', 'freshness']) $(`#${id}`).textContent = '';
+  $('#avatar').textContent = 'U';
+  clearTimeout(toastTimer);
+  $('#toast').hidden = true;
+  $('#toast').textContent = '';
   $('#app').hidden = true;
   $('#authScreen').hidden = false;
   $('#loginForm').reset();
@@ -308,58 +321,106 @@ function logout(message = '') {
 
 async function refresh() {
   if (!state.key || refreshing) return;
+  if (Date.now() >= state.expiresAt) { logout('会话已到期，请重新登录'); return; }
+  const generation = authGeneration;
+  const { key, user, envelope: previous } = state;
   refreshing = true;
   $('#refresh').classList.add('spin');
   try {
     const envelope = await fetchEnvelope();
-    if (envelope.salt !== state.envelope.salt) { logout('访问凭据已更新，请重新登录'); return; }
-    if (envelope.ciphertext !== state.envelope.ciphertext) {
-      const data = await decrypt(envelope, state.key);
-      if (!data.allowedUsers.includes(state.user)) { logout('当前账号已无访问权限'); return; }
+    if (generation !== authGeneration) return;
+    if (envelope.salt !== previous.salt) { logout('访问凭据已更新，请重新登录'); return; }
+    if (envelope.ciphertext !== previous.ciphertext) {
+      const data = await decrypt(envelope, key);
+      if (generation !== authGeneration) return;
+      if (!data.allowedUsers.includes(user)) { logout('当前账号已无访问权限'); return; }
       if ($('#detailDialog').open) $('#detailDialog').close();
       state.data = data;
       state.envelope = envelope;
       render();
     }
-  } catch (error) { toast(error.name === 'OperationError' ? '访问凭据已变更，请重新登录' : error.message); }
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    if (error.name === 'OperationError') logout('访问凭据已变更，请重新登录');
+    else toast(error.message);
+  }
   finally { refreshing = false; $('#refresh').classList.remove('spin'); }
+}
+
+function loginBusy(busy, label = '正在验证') {
+  authBusy = busy;
+  $('#loginForm').setAttribute('aria-busy', String(busy));
+  const button = $('#loginForm button[type=submit]');
+  button.disabled = busy;
+  button.innerHTML = `${icon(busy ? 'loader-circle' : 'arrow-right')}<span>${busy ? label : '进入控制台'}</span>`;
+  icons();
+}
+
+function unlock(data, envelope, session) {
+  if (Date.now() >= session.expiresAt) { logout('会话已到期，请重新登录'); return; }
+  state.key = session.key;
+  state.user = session.user;
+  state.expiresAt = session.expiresAt;
+  state.data = data;
+  state.envelope = envelope;
+  state.query = '';
+  clearTimeout(expiryTimer);
+  expiryTimer = setTimeout(() => logout('会话已到期，请重新登录'), session.expiresAt - Date.now());
+  $('#password').value = '';
+  $('#sessionUser').textContent = session.user;
+  $('#avatar').textContent = session.user.slice(0, 1).toUpperCase();
+  $('#authScreen').hidden = true;
+  $('#app').hidden = false;
+  render();
+  $('#main').focus({ preventScroll: true });
+}
+
+async function restoreSession() {
+  const generation = ++authGeneration;
+  loginBusy(true, '正在恢复会话');
+  try {
+    const session = await loadSession();
+    if (!session || generation !== authGeneration) return;
+    const envelope = await fetchEnvelope();
+    if (generation !== authGeneration) return;
+    if (session.salt !== envelope.salt) { logout('访问凭据已更新，请重新登录'); return; }
+    const data = await decrypt(envelope, session.key);
+    if (generation !== authGeneration) return;
+    if (!data.allowedUsers.includes(session.user)) { logout('当前账号已无访问权限'); return; }
+    unlock(data, envelope, session);
+  } catch (error) {
+    if (generation !== authGeneration) return;
+    if (error.name === 'OperationError') logout('访问凭据已变更，请重新登录');
+    else $('#loginError').textContent = error.message;
+  } finally { loginBusy(false); }
 }
 
 $('#loginForm').addEventListener('submit', async event => {
   event.preventDefault();
-  const button = $('#loginForm button[type=submit]');
+  if (authBusy) return;
+  const generation = ++authGeneration;
   const user = $('#username').value.trim();
   let key;
-  button.disabled = true;
-  button.innerHTML = `${icon('loader-circle')}<span>正在验证</span>`;
+  loginBusy(true);
   $('#loginError').textContent = '';
   icons();
   try {
     const envelope = await fetchEnvelope();
     key = await deriveKey(envelope, $('#password').value);
+    $('#password').value = '';
     const data = await decrypt(envelope, key);
     if (!data.allowedUsers.includes(user)) throw new DOMException('Invalid credentials', 'OperationError');
-    state.key = key;
-    state.data = data;
-    state.envelope = envelope;
-    state.user = user;
-    state.query = '';
-    $('#password').value = '';
-    $('#sessionUser').textContent = user;
-    $('#avatar').textContent = user.slice(0, 1).toUpperCase();
-    $('#authScreen').hidden = true;
-    $('#app').hidden = false;
-    render();
-    $('#main').focus({ preventScroll: true });
+    if (generation !== authGeneration) return;
+    const session = { user, key, salt: envelope.salt, expiresAt: Date.now() + SESSION_LIFETIME };
+    const saved = await saveSession(session);
+    if (generation !== authGeneration) return;
+    unlock(data, envelope, session);
+    if (!saved) toast('浏览器未允许保存会话，刷新后需重新登录');
   } catch (error) {
     key = null;
     $('#password').value = '';
     $('#loginError').textContent = error.name === 'OperationError' ? '用户名或密码不正确' : error.message;
-  } finally {
-    button.disabled = false;
-    button.innerHTML = `${icon('arrow-right')}<span>进入控制台</span>`;
-    icons();
-  }
+  } finally { loginBusy(false); }
 });
 
 $('#showPassword').addEventListener('click', () => {
@@ -416,5 +477,9 @@ $('#detailDialog').addEventListener('close', () => {
 });
 window.addEventListener('hashchange', () => { state.query = ''; closeMenu(); if ($('#detailDialog').open) $('#detailDialog').close(); render(); window.scrollTo({ top: 0 }); });
 setInterval(() => { if ($('#autoRefresh').checked && !document.hidden) refresh(); }, 60000);
+function checkExpiry() { if (state.key && Date.now() >= state.expiresAt) logout('会话已到期，请重新登录'); }
+document.addEventListener('visibilitychange', checkExpiry);
+window.addEventListener('pageshow', checkExpiry);
 try { const saved = localStorage.getItem('yxgpu-theme'); if (saved === 'light') document.documentElement.dataset.theme = saved; } catch { /* Theme persistence is optional. */ }
 icons();
+void restoreSession();

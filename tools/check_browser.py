@@ -10,6 +10,51 @@ from urllib.parse import urlsplit, unquote
 from playwright.sync_api import sync_playwright
 
 
+def login(page, password):
+    page.wait_for_function("() => !document.querySelector('button[type=submit]').disabled")
+    page.locator("#username").fill("pcpan")
+    page.locator("#password").fill(password)
+    page.locator("button[type=submit]").click()
+    page.locator("#app").wait_for(state="visible")
+
+
+def session_record(page, action="inspect"):
+    return page.evaluate("""async action => {
+        const id = sessionStorage.getItem('yxgpu-session');
+        const replacement = action === 'wrong-key' ? await crypto.subtle.generateKey(
+            {name:'AES-GCM',length:256}, false, ['decrypt']) : null;
+        const database = await new Promise((resolve,reject) => {
+            const request=indexedDB.open('yxgpu-sessions',1);
+            request.onsuccess=()=>resolve(request.result);request.onerror=()=>reject(request.error);
+        });
+        try { return await new Promise((resolve,reject) => {
+            const task=database.transaction('sessions', action==='inspect'?'readonly':'readwrite');
+            const store=task.objectStore('sessions');const request=store.get(id);let result;
+            request.onsuccess=()=>{
+                const record=request.result;
+                if(!record) {result=null;return;}
+                if(action==='expire') record.expiresAt=Date.now()-1;
+                if(action==='corrupt') record.key='invalid';
+                if(action==='wrong-key') record.key=replacement;
+                if(action==='removed-user') record.user='not-an-allowed-account';
+                if(action==='salt') record.salt='changed';
+                if(action!=='inspect') store.put(record);
+                result={id,expiresAt:record.expiresAt,fields:Object.keys(record).sort(),
+                    cryptoKey:record.key instanceof CryptoKey,extractable:record.key.extractable,
+                    usages:record.key.usages};
+            };
+            task.oncomplete=()=>resolve(result);task.onerror=task.onabort=()=>reject(task.error);
+        }); } finally {database.close();}
+    }""", action)
+
+
+def assert_logged_out(page):
+    page.wait_for_function("() => !document.querySelector('button[type=submit]').disabled")
+    assert page.locator("#app").is_hidden()
+    assert not page.locator("#main").inner_text()
+    assert page.evaluate("sessionStorage.getItem('yxgpu-session')") is None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8765")
@@ -55,10 +100,23 @@ def main():
         page.wait_for_function("() => !document.querySelector('button[type=submit]').disabled")
         assert page.locator("#app").is_hidden()
         checks.append("unlisted username is rejected")
-        page.locator("#username").fill("pcpan")
-        page.locator("#password").fill(private["password"])
-        page.locator("button[type=submit]").click()
-        page.locator("#app").wait_for(state="visible")
+        login(page, private["password"])
+        record = session_record(page)
+        assert record["cryptoKey"] and record["extractable"] is False
+        assert record["usages"] == ["decrypt"]
+        assert record["fields"] == ["expiresAt", "id", "key", "salt", "user"]
+        for _ in range(2):
+            page.reload(wait_until="networkidle")
+            page.locator("#app").wait_for(state="visible")
+            restored = session_record(page)
+            assert restored["id"] == record["id"]
+            assert restored["expiresAt"] == record["expiresAt"]
+        checks.append("reload restores the non-extractable key without extending session expiry")
+        other_tab = context.new_page()
+        other_tab.goto(args.url, wait_until="networkidle")
+        assert_logged_out(other_tab)
+        other_tab.close()
+        checks.append("a fresh tab cannot reuse another tab's saved session")
         page.wait_for_timeout(600)
         assert page.locator(".gpu-card").count() == 8
         assert page.locator("#password").input_value() == ""
@@ -100,8 +158,10 @@ def main():
         page.screenshot(path=str(artifacts / "overview-light.png"), full_page=True)
         page.locator("#themeToggle").click()
         assert page.evaluate("JSON.stringify({...localStorage})").find(private["password"]) == -1
-        assert page.evaluate("JSON.stringify({...sessionStorage})") == "{}"
-        checks.append("theme switch works; no credentials in browser storage")
+        assert page.evaluate("Object.keys(sessionStorage)") == ["yxgpu-session"]
+        assert page.evaluate("JSON.stringify({...sessionStorage})").find(private["password"]) == -1
+        assert page.evaluate("sessionStorage.getItem('yxgpu-session')") == record["id"]
+        checks.append("theme switch works; Web Storage contains only theme and random session reference")
         page.set_viewport_size({"width": 390, "height": 844})
         page.wait_for_timeout(350)
         page.screenshot(path=str(artifacts / "overview-mobile.png"), full_page=True)
@@ -115,10 +175,59 @@ def main():
         checks.append("mobile navigation and every view fit 390px")
         page.locator("#mobileMenu").click()
         page.locator("#logout").click()
-        assert page.locator("#app").is_hidden()
-        assert not page.locator("#main").inner_text()
+        assert_logged_out(page)
+        page.wait_for_function("""async id => {
+            const db=await new Promise(resolve=>{const r=indexedDB.open('yxgpu-sessions',1);r.onsuccess=()=>resolve(r.result)});
+            try{return await new Promise(resolve=>{const r=db.transaction('sessions').objectStore('sessions').get(id);r.onsuccess=()=>resolve(!r.result)})}
+            finally{db.close()}
+        }""", arg=record["id"])
+        page.reload(wait_until="networkidle")
+        assert_logged_out(page)
         page.screenshot(path=str(artifacts / "login-mobile.png"), full_page=True)
-        checks.append("logout removes decrypted content")
+        checks.append("logout deletes the stored key and decrypted content; reload stays signed out")
+        page.set_viewport_size({"width": 1440, "height": 1050})
+        for action in ("expire", "corrupt", "wrong-key", "salt", "removed-user"):
+            login(page, private["password"])
+            session_record(page, action)
+            page.reload(wait_until="networkidle")
+            assert_logged_out(page)
+        checks.append("expired, corrupt, wrong-key, changed-salt and removed-user sessions are invalidated")
+
+        page.clock.install()
+        login(page, private["password"])
+        page.locator("#autoRefresh").uncheck()
+        page.clock.fast_forward(12 * 60 * 60 * 1000 + 1000)
+        assert_logged_out(page)
+        page.clock.resume()
+        checks.append("an open dashboard also locks when its 12-hour session expires")
+
+        page.reload(wait_until="networkidle")
+        login(page, private["password"])
+        pending = []
+        page.route("**/data/snapshot.enc.json", lambda route: pending.append(route))
+        with page.expect_request("**/data/snapshot.enc.json"):
+            page.locator("#refresh").click()
+        page.locator("#logout").click()
+        assert len(pending) == 1
+        with page.expect_response("**/data/snapshot.enc.json"):
+            pending[0].continue_()
+        page.unroute("**/data/snapshot.enc.json")
+        page.wait_for_timeout(300)
+        assert_logged_out(page)
+        checks.append("an in-flight refresh cannot restore data after logout")
+
+        unavailable = browser.new_context(viewport={"width": 1440, "height": 1050})
+        unavailable.add_init_script("Object.defineProperty(window,'indexedDB',{value:{open(){throw new Error('Storage disabled')}}})")
+        fallback = unavailable.new_page()
+        fallback.on("pageerror", lambda error: errors.append(str(error)))
+        fallback.goto(args.url, wait_until="networkidle")
+        login(fallback, private["password"])
+        assert fallback.evaluate("sessionStorage.getItem('yxgpu-session')") is None
+        assert fallback.locator("#toast").is_visible()
+        fallback.reload(wait_until="networkidle")
+        assert_logged_out(fallback)
+        unavailable.close()
+        checks.append("disabled browser storage still permits a temporary in-memory login")
         assert not errors, errors
         browser.close()
     report = {"checks": checks, "canvas": canvas, "javascript_errors": errors,
