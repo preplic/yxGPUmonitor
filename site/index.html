@@ -8,7 +8,7 @@
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'">
   <title>YX GPU Monitor</title>
   <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./assets/style.css?v=20261116-average-1">
+  <link rel="stylesheet" href="./assets/style.css?v=20261116-header-1">
   <script src="./vendor/echarts.min.js" defer></script>
   <script src="./vendor/lucide.min.js" defer></script>
   <!-- Change the entry version when updating the application module. -->
@@ -50,7 +50,7 @@
     <div class="workspace">
       <header class="topbar">
         <button id="mobileMenu" class="icon-button mobile-menu" aria-label="打开导航" data-tooltip="打开导航"><i data-lucide="menu"></i></button>
-        <div class="breadcrumb"><span>基础设施</span><i data-lucide="chevron-right"></i><strong id="breadcrumbView">监控总览</strong></div>
+        <div class="breadcrumb"><strong id="breadcrumbView">监控总览</strong></div>
         <div class="top-actions"><span id="freshness" class="freshness"></span><button id="themeToggle" class="icon-button" aria-label="切换明暗主题" data-tooltip="切换明暗主题"><i data-lucide="sun"></i></button><span class="toolbar-divider"></span><label class="auto-control"><span>自动刷新</span><input id="autoRefresh" type="checkbox" checked role="switch"><span class="switch-track"></span></label><button id="refresh" class="icon-button" aria-label="刷新数据" data-tooltip="刷新数据"><i data-lucide="refresh-cw"></i></button></div>
       </header>
       <main id="main" tabindex="-1"></main>

@@ -462,14 +462,6 @@ input:focus {
   font-size: 11px;
   white-space: nowrap;
 }
-.breadcrumb > span {
-  color: var(--muted);
-}
-.breadcrumb svg {
-  width: 12px;
-  height: 12px;
-  color: var(--muted);
-}
 .breadcrumb strong {
   font-weight: 500;
 }
@@ -1516,10 +1508,6 @@ td.muted {
     margin-right: auto;
     gap: 7px;
     font-size: 10px;
-  }
-  .breadcrumb > span,
-  .breadcrumb > svg {
-    display: none;
   }
   .top-actions {
     gap: 3px;
