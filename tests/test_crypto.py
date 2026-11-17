@@ -65,11 +65,14 @@ class EncryptionTests(unittest.TestCase):
         state = {"last_success_at": 123, "current": {"owners": {"g": {"42:u": {"uid": 42}}},
                  "processes": [{"gpu_uuid": "g", "pid": 99}, {"gpu_uuid": "g", "pid": 100}]},
                  "users": {"42:u": {"gpu_seconds": 10, "shared_gpu_seconds": 2}},
-                 "observed_physical_seconds": 10, "unobserved_physical_seconds": 0,
+                 "observed_physical_seconds": 10, "busy_physical_seconds": 6,
+                 "unobserved_physical_seconds": 0,
                  "unattributed_physical_seconds": 0}
         point = export_data.point(state)
         self.assertEqual(point["busy"], 1)
-        self.assertEqual(point["cards"], {"42:u": 1})
+        self.assertEqual(point["busySeconds"], 6)
+        self.assertTrue({"cards", "totals", "shared"}.isdisjoint(point))
+        self.assertNotIn("42:u", json.dumps(point))
         self.assertNotIn("pid", json.dumps(point))
 
 

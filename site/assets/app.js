@@ -8,10 +8,11 @@ const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = name => `<i data-lucide="${name}"></i>`;
 const palette = ['#55d6aa', '#e9b96b', '#a899ef', '#6da8f5', '#f58d9a', '#7ac8d6'];
-const views = { overview: '监控总览', gpus: 'GPU 设备', users: '用户用量', events: '运行记录' };
+const views = { overview: '监控总览', gpus: 'GPU 设备', events: '运行记录' };
+const gpuPeriods = [['15m', '15 分钟'], ['1h', '1 小时'], ['6h', '6 小时'], ['24h', '24 小时']];
 const modelName = value => value.replace('NVIDIA ', '').replace('-SXM4-40GB', '');
-const state = { data: null, key: null, envelope: null, user: '', expiresAt: 0, hours: 24, mode: 'busy',
-  query: '', eventFilter: 'all', sort: 'hours', descending: true, charts: [] };
+const state = { data: null, key: null, envelope: null, user: '', expiresAt: 0, hours: 24,
+  gpuWindow: '15m', eventFilter: 'all', charts: [] };
 let refreshing = false;
 let toastTimer;
 let chartObserver;
@@ -25,8 +26,17 @@ function fmt(value, digits = 1) {
 
 const gib = value => Number.isFinite(value) ? value / 1024 : null;
 
+function gpuWindow() {
+  return state.data.node.metricWindows?.[state.gpuWindow] || state.data.node.metricWindow;
+}
+
+function gpuCards() {
+  const metrics = gpuWindow()?.metrics;
+  return state.data.node.gpus.map(gpu => ({ ...gpu, ...metrics?.[gpu.uuid] }));
+}
+
 function metricPeriod() {
-  const window = state.data.node.metricWindow;
+  const window = gpuWindow();
   return window ? `区间平均 · ${date(window.start)} - ${date(window.end)} · 北京时间` : '';
 }
 
@@ -46,18 +56,6 @@ function bounds() {
   const requested = last.t - state.hours * 3600;
   const first = points.findLast(point => point.t <= requested) || points[0];
   return { first, last, start: Math.max(requested, first.t), points: points.filter(point => point.t >= first.t) };
-}
-
-function usageRows(filter = true) {
-  const { first } = bounds();
-  let rows = Object.entries(state.data.node.users).map(([key, user], index) => ({ ...user, key,
-    hours: Math.max(0, user.totalSeconds - (first.totals[key] || 0)) / 3600,
-    shared: Math.max(0, user.sharedSeconds - (first.shared[key] || 0)) / 3600,
-    occupied: state.data.node.gpus.filter(gpu => gpu.owners.some(owner => owner.uid === user.uid && owner.name === user.name)).length,
-    color: palette[index % palette.length] }));
-  const query = state.query.toLowerCase().trim();
-  if (query && filter) rows = rows.filter(row => row.name.toLowerCase().includes(query) || String(row.uid).includes(query));
-  return rows.sort((a, b) => (typeof a[state.sort] === 'string' ? a[state.sort].localeCompare(b[state.sort]) : a[state.sort] - b[state.sort]) * (state.descending ? -1 : 1));
 }
 
 function toast(message) {
@@ -89,35 +87,29 @@ function notices() {
 }
 
 function metrics() {
-  const data = state.data, gpus = data.node.gpus;
+  const data = state.data, gpus = gpuCards();
   const used = gpus.filter(gpu => gpu.occupied).length;
   const valid = gpus.filter(gpu => Number.isFinite(gpu.utilization));
   const avg = valid.length ? valid.reduce((sum, gpu) => sum + gpu.utilization, 0) / valid.length : null;
   const memoryCards = gpus.filter(gpu => Number.isFinite(gpu.memoryUsed));
   const memory = memoryCards.length ? memoryCards.reduce((sum, gpu) => sum + gpu.memoryUsed, 0) / 1024 : null;
   const total = gpus.reduce((sum, gpu) => sum + (gpu.memoryTotal || 0), 0) / 1024;
-  const hours = usageRows(false).reduce((sum, row) => sum + row.hours, 0);
+  const { first, last } = bounds();
+  const hours = Number.isFinite(first.busySeconds) && Number.isFinite(last.busySeconds)
+    ? Math.max(0, last.busySeconds - first.busySeconds) / 3600 : null;
   const rows = [
     ['microchip', '当前占卡', `${used}<small>/ ${gpus.length}</small>`, `${gpus.length - used} 张空闲 · ${gpus.filter(gpu => gpu.owners.length > 1).length} 张共享`],
     ['gauge', '平均 GPU 利用率', `${fmt(avg, 0)}<small>%</small>`, `平均显存 ${fmt(memory, 1)} / ${fmt(total, 0)} GiB`],
-    ['chart-no-axes-combined', '区间用户卡时', `${fmt(hours, 2)}<small>GPU·h</small>`, `${Object.keys(data.node.users).length} 个历史账号 · 已观测 ${duration(bounds().last.t - bounds().first.t)}`],
+    ['chart-no-axes-combined', '区间占用卡时', `${fmt(hours, 2)}<small>GPU·h</small>`, `已观测 ${duration(last.t - first.t)}`],
     ['activity', '累计成功采样', `${fmt(data.node.sampleCount, 0)}<small>次</small>`, `节点采样周期 ${data.node.gpuInterval} 秒`]
   ];
   return `<div class="metrics">${rows.map(([symbol, label, value, meta]) => `<div class="metric"><div class="metric-label">${icon(symbol)}${label}</div><div class="metric-value">${value}</div><div class="metric-meta">${meta}</div></div>`).join('')}</div>`;
 }
 
-function chartPanel(full = false) {
-  const userMode = state.mode === 'users';
-  const legend = userMode ? Object.values(state.data.node.users).map((user, index) => [user.name, palette[index % palette.length]]) : [['物理卡占用', palette[0]], ['用户占卡合计', palette[1]]];
-  return `<section class="chart-tool ${full ? 'full-chart' : ''}"><div class="tool-heading"><h2>GPU 占用趋势 <span class="heading-note">/ 卡</span></h2><div class="segmented" aria-label="图表维度"><button data-chart-mode="busy" class="${!userMode ? 'selected' : ''}" aria-pressed="${!userMode}">占用</button><button data-chart-mode="users" class="${userMode ? 'selected' : ''}" aria-pressed="${userMode}">按用户</button></div></div>
-    <div class="chart-legend">${legend.map(([label, color]) => `<span><i class="legend-dot" style="background:${color}"></i>${esc(label)}</span>`).join('')}</div><div id="occupancyChart" class="occupancy-chart" role="img" aria-label="GPU 占卡时间趋势"></div>
+function chartPanel() {
+  return `<section class="chart-tool full-chart"><div class="tool-heading"><h2>GPU 占用趋势 <span class="heading-note">/ 卡</span></h2></div>
+    <div class="chart-legend"><span><i class="legend-dot" style="background:${palette[0]}"></i>物理卡占用</span></div><div id="occupancyChart" class="occupancy-chart" role="img" aria-label="GPU 占卡时间趋势"></div>
     <div class="plot-foot"><span>${date(bounds().first.t)} — ${date(bounds().last.t)}</span><span>${TIME_ZONE_LABEL}</span></div></section>`;
-}
-
-function rankings() {
-  const rows = usageRows(false).slice().sort((a, b) => b.hours - a.hours).slice(0, 5);
-  const maximum = rows[0]?.hours || 1;
-  return `<section class="chart-tool"><div class="tool-heading"><h2>用户用量排行</h2><span class="heading-note">GPU·h</span></div><div class="rank-list">${rows.length ? rows.map(row => `<div class="rank-row"><div class="rank-label"><span class="legend-dot" style="background:${row.color}"></span><span>${esc(row.name)}</span><small>#${row.uid}</small><b>${fmt(row.hours, 2)}</b></div><div class="rank-bar"><span style="width:${row.hours / maximum * 100}%;background:${row.color}"></span></div></div>`).join('') : '<div class="heading-note">暂无占卡记录</div>'}</div></section>`;
 }
 
 function gpuCard(gpu) {
@@ -134,25 +126,15 @@ function gpuCard(gpu) {
 }
 
 function gpuSection(all = false) {
-  return `<section><div class="section-heading"><h2>GPU 设备<span class="count">${state.data.node.gpus.length} 张</span></h2>${all ? '' : `<a href="#gpus" class="text-link">全部设备${icon('arrow-up-right')}</a>`}</div><div class="gpu-period heading-note">${metricPeriod()}</div><div class="gpu-grid">${state.data.node.gpus.map(gpuCard).join('')}</div></section>`;
-}
-
-function usersTable() {
-  const rows = usageRows();
-  const max = Math.max(1, ...rows.map(row => row.hours));
-  const header = (field, label) => `<button class="sort-button" data-sort="${field}">${label}${icon(state.sort === field ? (state.descending ? 'arrow-down' : 'arrow-up') : 'arrow-up-down')}</button>`;
-  return `<div class="table-wrap"><table><thead><tr><th>${header('name', '用户')}</th><th>${header('uid', 'UID')}</th><th class="number">${header('occupied', '当前占卡')}</th><th class="number">${header('hours', '区间卡时 / GPU·h')}</th><th class="number">${header('shared', '其中共享 / GPU·h')}</th><th class="number">累计卡时 / GPU·h</th></tr></thead><tbody>${rows.map(row => `<tr><td><div class="table-user"><span class="mini-avatar">${esc(row.name.slice(0, 1).toUpperCase())}</span><button data-user="${esc(row.key)}">${esc(row.name)}</button></div></td><td class="muted">${row.uid}</td><td class="number">${row.occupied ? `<span class="badge good">${row.occupied} 张</span>` : '<span class="muted">—</span>'}</td><td class="number"><span class="usage-cell"><span class="tiny-bar"><span style="width:${row.hours / max * 100}%"></span></span>${fmt(row.hours, 3)}</span></td><td class="number">${fmt(row.shared, 3)}</td><td class="number">${fmt(row.totalSeconds / 3600, 3)}</td></tr>`).join('')}</tbody></table></div>${!rows.length ? empty('search-x', '没有匹配的用户') : ''}<div class="table-foot"><span>${rows.length} 个账号</span><span>区间 ${duration(bounds().last.t - bounds().first.t)}</span></div>`;
+  const controls = `<div class="segmented" aria-label="GPU 统计时段">${gpuPeriods.map(([key, label]) =>
+    `<button data-gpu-window="${key}" class="${state.gpuWindow === key ? 'selected' : ''}" aria-pressed="${state.gpuWindow === key}" ${key !== '15m' && !state.data.node.metricWindows?.[key] ? 'disabled' : ''}>${label}</button>`).join('')}</div>`;
+  return `<section><div class="section-heading"><h2>GPU 设备<span class="count">${state.data.node.gpus.length} 张</span></h2>${all ? '' : `<a href="#gpus" class="text-link">全部设备${icon('arrow-up-right')}</a>`}</div><div class="gpu-window-bar">${controls}<div class="gpu-period heading-note">${metricPeriod()}</div></div><div class="gpu-grid">${gpuCards().map(gpuCard).join('')}</div></section>`;
 }
 
 function empty(symbol, title, text = '') { return `<div class="empty-state">${icon(symbol)}<h3>${title}</h3>${text ? `<p>${text}</p>` : ''}</div>`; }
 
 function overview() {
-  return heading('集群概览') + metrics() + `<div class="overview-plots">${chartPanel()}${rankings()}</div>` + gpuSection() +
-    `<section><div class="section-heading"><h2>用户用量<span class="count">${Object.keys(state.data.node.users).length} 个账号</span></h2><a href="#users" class="text-link">查看明细${icon('arrow-up-right')}</a></div><div id="tableContent">${usersTable()}</div></section>`;
-}
-
-function usersPage() {
-  return heading('用户用量') + metrics() + chartPanel(true) + `<section><div class="section-heading"><h2>账号用量明细</h2><span class="heading-note">${date(bounds().first.t)} 起</span></div><div class="filter-bar"><div class="input-icon">${icon('search')}<input id="userSearch" type="search" placeholder="搜索用户名或 UID" aria-label="搜索用户名或 UID" value="${esc(state.query)}"></div><span class="heading-note">共享卡时已计入用户总卡时</span></div><div id="tableContent">${usersTable()}</div></section>`;
+  return heading('集群概览') + metrics() + chartPanel() + gpuSection();
 }
 
 const eventTypes = { start: ['play', '启动', ''], stop: ['square', '停止', ''], gap: ['unplug', '采样缺口', 'text-warning'], sample_error: ['triangle-alert', '采样异常', 'text-danger'] };
@@ -216,16 +198,8 @@ function drawMainChart() {
   const element = $('#occupancyChart');
   if (!element) return;
   const points = bounds().points;
-  let series;
-  if (state.mode === 'users') {
-    series = Object.entries(state.data.node.users).map(([key, row], index) => ({ name: row.name,
-      stack: 'users', areaStyle: { opacity: 0.13 }, itemStyle: { color: palette[index % palette.length] },
-      data: points.map(point => [point.t * 1000, point.cards[key] || 0]) }));
-  } else {
-    series = [{ name: '物理卡占用', areaStyle: { opacity: 0.13 }, itemStyle: { color: palette[0] }, data: points.map(point => [point.t * 1000, point.busy]) },
-      { name: '用户占卡合计', itemStyle: { color: palette[1] }, lineStyle: { width: 1.3, type: 'dashed' }, data: points.map(point => [point.t * 1000, Object.values(point.cards).reduce((sum, n) => sum + n, 0)]) }];
-  }
-  const max = Math.max(state.data.node.expectedGpus, ...points.map(point => Object.values(point.cards).reduce((sum, n) => sum + n, 0)));
+  const series = [{ name: '物理卡占用', areaStyle: { opacity: 0.13 }, itemStyle: { color: palette[0] }, data: points.map(point => [point.t * 1000, point.busy]) }];
+  const max = Math.max(state.data.node.expectedGpus, ...points.map(point => point.busy));
   plot(element, series, max);
 }
 
@@ -240,7 +214,7 @@ function render() {
     if (link.dataset.view === view) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
   });
-  $('#main').innerHTML = view === 'overview' ? overview() : view === 'users' ? usersPage() : view === 'gpus' ? heading('GPU 设备') + metrics() + gpuSection(true) : eventsPage();
+  $('#main').innerHTML = view === 'overview' ? overview() : view === 'gpus' ? heading('GPU 设备') + metrics() + gpuSection(true) : eventsPage();
   $('#sidebarNode').textContent = state.data.node.name;
   $('#sidebarModel').textContent = `${modelName(state.data.node.model)} × ${state.data.node.gpus.length}`;
   $('#navGpuCount').textContent = state.data.node.gpus.length;
@@ -256,19 +230,8 @@ function render() {
 
 function closeMenu() { $('#sidebar').classList.remove('open'); $('#sidebarScrim').hidden = true; }
 
-function userDetail(key) {
-  const row = Object.entries(state.data.node.users).find(([name]) => name === key)?.[1];
-  if (!row) return;
-  const first = bounds().first;
-  const occupied = state.data.node.gpus.filter(gpu => gpu.owners.some(owner => owner.uid === row.uid));
-  $('#detailContent').innerHTML = `<div class="dialog-heading"><h2>${esc(row.name)} <span class="heading-note">UID ${row.uid}</span></h2><button class="icon-button" data-close-dialog aria-label="关闭详情" data-tooltip="关闭">${icon('x')}</button></div><dl class="detail-values"><div><dt>当前占卡</dt><dd>${occupied.length} <small>张</small></dd></div><div><dt>区间 GPU·h</dt><dd>${fmt((row.totalSeconds - (first.totals[key] || 0)) / 3600, 3)}</dd></div><div><dt>累计 GPU·h</dt><dd>${fmt(row.totalSeconds / 3600, 2)}</dd></div></dl><div class="section-heading"><h2>用户占卡趋势</h2><span class="heading-note">${state.hours === 168 ? '7 天' : state.hours + ' 小时'}</span></div><div id="detailChart" class="detail-chart"></div><div class="scope-tags">${occupied.length ? occupied.map(gpu => `<span class="badge good">GPU ${gpu.index}</span>`).join('') : '<span class="heading-note">当前没有占卡</span>'}</div>`;
-  $('#detailDialog').showModal();
-  icons();
-  plot($('#detailChart'), [{ name: row.name, areaStyle: { opacity: 0.12 }, data: bounds().points.map(point => [point.t * 1000, point.cards[key] || 0]) }], Math.max(state.data.node.expectedGpus, occupied.length));
-}
-
 function gpuDetail(index) {
-  const gpu = state.data.node.gpus.find(item => item.index === Number(index));
+  const gpu = gpuCards().find(item => item.index === Number(index));
   if (!gpu) return;
   const owners = gpu.intervalOwners || [];
   const emptyOwners = !gpu.intervalOwners ? '暂无区间记录' : gpu.intervalOccupied ? '归属待确认' : '无';
@@ -279,9 +242,9 @@ function gpuDetail(index) {
 
 function exportCsv() {
   let rows;
-  if (currentView() === 'gpus') rows = [['GPU', '型号', '平均利用率%', '平均显存占用率%', '平均显存MiB', '区间开始（北京时间）', '区间结束（北京时间）', '温度°C', '功耗W', '区间占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUtilization, gpu.memoryUsed, date(state.data.node.metricWindow?.start, { second: '2-digit' }), date(state.data.node.metricWindow?.end, { second: '2-digit' }), gpu.temperature, gpu.power, (gpu.intervalOwners || []).map(owner => owner.name).join(';')])];
+  if (currentView() === 'gpus') rows = [['GPU', '型号', '平均利用率%', '平均显存占用率%', '平均显存MiB', '区间开始（北京时间）', '区间结束（北京时间）', '温度°C', '功耗W', '区间占用账号'], ...gpuCards().map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUtilization, gpu.memoryUsed, date(gpuWindow()?.start, { second: '2-digit' }), date(gpuWindow()?.end, { second: '2-digit' }), gpu.temperature, gpu.power, (gpu.intervalOwners || []).map(owner => owner.name).join(';')])];
   else if (currentView() === 'events') rows = [['时间（北京时间）', '来源', '类型', '详情', '秒'], ...state.data.events.filter(row => row.source === 'gpu').map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
-  else rows = [['用户名', 'UID', '当前占卡', '区间GPU小时', '共享GPU小时', '累计GPU小时'], ...usageRows().map(row => [row.name, row.uid, row.occupied, row.hours, row.shared, row.totalSeconds / 3600])];
+  else rows = [['时间（北京时间）', '占用GPU数', '空闲GPU数', '累计占用卡时/GPU·h'], ...bounds().points.map(point => [date(point.t, { second: '2-digit' }), point.busy, Math.max(0, state.data.node.gpus.length - point.busy), Number.isFinite(point.busySeconds) ? point.busySeconds / 3600 : null])];
   const csv = '\ufeff' + rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
   const anchor = document.createElement('a');
@@ -310,7 +273,7 @@ function logout(message = '') {
   state.envelope = null;
   state.user = '';
   state.expiresAt = 0;
-  state.query = '';
+  state.gpuWindow = '15m';
   $('#main').replaceChildren();
   for (const id of ['sessionUser', 'sidebarNode', 'sidebarModel', 'footerStatus', 'footerTime', 'freshness']) $(`#${id}`).textContent = '';
   $('#avatar').textContent = 'U';
@@ -374,7 +337,6 @@ function unlock(data, envelope, session) {
   state.expiresAt = session.expiresAt;
   state.data = data;
   state.envelope = envelope;
-  state.query = '';
   clearTimeout(expiryTimer);
   expiryTimer = setTimeout(() => logout('会话已到期，请重新登录'), session.expiresAt - Date.now());
   $('#password').value = '';
@@ -453,39 +415,23 @@ $('#themeToggle').addEventListener('click', () => {
 $('#mobileMenu').addEventListener('click', () => { $('#sidebar').classList.toggle('open'); $('#sidebarScrim').hidden = !$('#sidebar').classList.contains('open'); });
 $('#sidebarScrim').addEventListener('click', closeMenu);
 $('#main').addEventListener('click', event => {
-  const target = event.target.closest('[data-range],[data-chart-mode],[data-gpu],[data-user],[data-export],[data-sort]');
+  const target = event.target.closest('[data-range],[data-gpu-window],[data-gpu],[data-export]');
   if (!target) return;
   if (target.dataset.range) { state.hours = Number(target.dataset.range); render(); }
-  else if (target.dataset.chartMode) { state.mode = target.dataset.chartMode; render(); }
+  else if (target.dataset.gpuWindow) { state.gpuWindow = target.dataset.gpuWindow; if ($('#detailDialog').open) $('#detailDialog').close(); render(); }
   else if (target.dataset.gpu !== undefined) gpuDetail(target.dataset.gpu);
-  else if (target.dataset.user) userDetail(target.dataset.user);
   else if (target.hasAttribute('data-export')) exportCsv();
-  else if (target.dataset.sort) {
-    state.descending = state.sort === target.dataset.sort ? !state.descending : true;
-    state.sort = target.dataset.sort;
-    $('#tableContent').innerHTML = usersTable(); icons();
-  }
 });
 $('#main').addEventListener('keydown', event => {
   if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-gpu]')) {
     event.preventDefault(); gpuDetail(event.target.dataset.gpu);
   }
 });
-$('#main').addEventListener('input', event => {
-  if (event.target.id === 'userSearch') {
-    state.query = event.target.value;
-    $('#tableContent').innerHTML = usersTable(); icons();
-  }
-});
 $('#main').addEventListener('change', event => {
   if (event.target.id === 'eventFilter') { state.eventFilter = event.target.value; $('#tableContent').innerHTML = eventsTable(); icons(); }
 });
 $('#detailDialog').addEventListener('click', event => { if (event.target.closest('[data-close-dialog]') || event.target === $('#detailDialog')) $('#detailDialog').close(); });
-$('#detailDialog').addEventListener('close', () => {
-  const element = $('#detailChart');
-  if (element) { const chart = echarts.getInstanceByDom(element); chart?.dispose(); state.charts = state.charts.filter(item => !item.isDisposed()); }
-});
-window.addEventListener('hashchange', () => { state.query = ''; closeMenu(); if ($('#detailDialog').open) $('#detailDialog').close(); render(); window.scrollTo({ top: 0 }); });
+window.addEventListener('hashchange', () => { closeMenu(); if ($('#detailDialog').open) $('#detailDialog').close(); render(); window.scrollTo({ top: 0 }); });
 setInterval(() => { updateRuntimeStatus(); if ($('#autoRefresh').checked && !document.hidden) refresh(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) updateRuntimeStatus(); });
 function checkExpiry() { if (state.key && Date.now() >= state.expiresAt) logout('会话已到期，请重新登录'); }

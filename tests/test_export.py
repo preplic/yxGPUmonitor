@@ -19,11 +19,15 @@ class CollectorExportTests(unittest.TestCase):
         common = SimpleNamespace()
         gpu = SimpleNamespace(health=Mock(return_value=[]))
         modules = {"monitor_common": common, "gpu_usage": gpu}
+        metrics = {uuid: {**export_data.empty_gpu_metrics(), **(averages or {}).get(uuid, {}),
+                          **(occupancy or {}).get(uuid, {})}
+                   for uuid in (averages or {}).keys() | (occupancy or {}).keys()}
+        windows = {"15m": {"start": previous_generated_at or 100, "end": 1000, "metrics": metrics}}
         with patch.object(export_data, "monitor_paths", return_value=(cfg, "/unused/code")), \
                 patch.object(export_data.sys, "path", []), \
                 patch.object(export_data.importlib, "import_module", side_effect=modules.__getitem__), \
                 patch.object(export_data, "read_json", return_value=gpu_state), \
-                patch.object(export_data, "history", return_value=([], [], averages or {}, occupancy or {})), \
+                patch.object(export_data, "history", return_value=([], [], windows)), \
                 patch.object(export_data, "gpu_metrics", return_value=cards or []):
             return export_data.build_payload(private or {"allowed_users": ["test-account"]}, now=1000,
                                              previous_generated_at=previous_generated_at)
@@ -55,6 +59,9 @@ class CollectorExportTests(unittest.TestCase):
     def test_previous_update_in_the_future_is_rejected(self):
         with self.assertRaises(ValueError):
             self.build(previous_generated_at=1001)
+
+    def test_website_does_not_export_personal_usage_totals(self):
+        self.assertNotIn("users", self.build()["node"])
 
     def test_missing_samples_do_not_fall_back_to_instantaneous_metrics(self):
         cards = [{"uuid": "g", "model": "test GPU", "memoryUsed": 999, "utilization": 99}]
@@ -221,10 +228,62 @@ class IntervalOccupancyTests(unittest.TestCase):
                   sample(*self.observation(110, "bob", uid=1002)), sample(120, {})]
         common = SimpleNamespace(read_events=Mock(return_value=events))
         cfg = {"gpu_root": "/unused", "host": "test", "gpu_interval": 10}
-        trends, _, _, occupancy = export_data.history(cfg, sample(130, {}), common, 135, 100)
+        trends, _, windows = export_data.history(cfg, sample(130, {}), common, 135, 100)
         self.assertLess(len(trends), len(events))
-        self.assertEqual(occupancy["g"]["intervalOwners"],
+        self.assertEqual(windows["15m"]["metrics"]["g"]["intervalOwners"],
                          [{"uid": 1001, "name": "alice"}, {"uid": 1002, "name": "bob"}])
+
+
+class MetricWindowTests(unittest.TestCase):
+    def observations(self, now):
+        values = []
+        for offset, name, util in ((43200, "day-user", 10), (10800, "six-hour-user", 30),
+                                   (1800, "hour-user", 60), (400, "recent-user", 90)):
+            current = {"gpus": [{"uuid": "g", "memory_total": 1000,
+                                 "memory_used": util * 10, "utilization": util}],
+                       "owners": {"g": {name: {"uid": offset, "username": name}}},
+                       "processes": [{"gpu_uuid": "g"}]}
+            values.extend([(now - offset, current), (now - offset + 10, {})])
+        return values
+
+    def test_each_window_uses_its_own_samples_and_users(self):
+        now = 100000
+        windows = export_data.metric_windows(self.observations(now), now - 800, now, 10)
+        expected = {"15m": (800, ["recent-user"], 90),
+                    "1h": (3600, ["hour-user", "recent-user"], 75),
+                    "6h": (21600, ["hour-user", "recent-user", "six-hour-user"], 60),
+                    "24h": (86400, ["day-user", "hour-user", "recent-user", "six-hour-user"], 47.5)}
+        for key, (duration, names, utilization) in expected.items():
+            with self.subTest(window=key):
+                self.assertEqual((windows[key]["start"], windows[key]["end"]), (now - duration, now))
+                metric = windows[key]["metrics"]["g"]
+                self.assertEqual([owner["name"] for owner in metric["intervalOwners"]], names)
+                self.assertEqual(metric["utilization"], utilization)
+                self.assertEqual(metric["memoryUtilization"], utilization)
+                self.assertEqual(metric["metricCoverage"]["utilization"], len(names) * 10)
+
+    def test_owner_without_valid_metrics_does_not_inherit_another_window_average(self):
+        observation = (9000, {"owners": {"g": {"alice": {"uid": 1001, "username": "alice"}}}})
+        windows = export_data.metric_windows([observation], 9100, 10000, 10)
+        self.assertNotIn("g", windows["15m"]["metrics"])
+        metric = windows["1h"]["metrics"]["g"]
+        self.assertIsNone(metric["utilization"])
+        self.assertEqual(metric["metricSamples"], 0)
+        self.assertEqual(metric["intervalOwners"], [{"uid": 1001, "name": "alice"}])
+
+    def test_history_retains_samples_from_before_the_latest_publication(self):
+        now = 100000
+        def sample(t, current):
+            return {"type": "sample", "time": t, "last_success_at": t, "current": current,
+                    "ledger_id": "test", "observed_physical_seconds": 0,
+                    "unobserved_physical_seconds": 0, "unattributed_physical_seconds": 0}
+        events = [sample(t, current) for t, current in self.observations(now)]
+        common = SimpleNamespace(read_events=Mock(return_value=events))
+        cfg = {"gpu_root": "/unused", "host": "test", "gpu_interval": 10}
+        _, _, windows = export_data.history(cfg, sample(now - 1, {}), common, now, now - 800)
+        metric = windows["24h"]["metrics"]["g"]
+        self.assertEqual(metric["utilization"], 47.5)
+        self.assertEqual(len(metric["intervalOwners"]), 4)
 
 
 if __name__ == "__main__":

@@ -105,13 +105,8 @@ def collector_status(state, problems):
 
 def point(state):
     current = state.get("current", {})
-    users = {}
-    for owners in current.get("owners", {}).values():
-        for key in owners:
-            users[key] = users.get(key, 0) + 1
     return {"t": state["last_success_at"], "busy": len({p["gpu_uuid"] for p in current.get("processes", [])}),
-            "cards": users, "totals": {key: row["gpu_seconds"] for key, row in state["users"].items()},
-            "shared": {key: row["shared_gpu_seconds"] for key, row in state["users"].items()},
+            "busySeconds": state.get("busy_physical_seconds"),
             "observed": state["observed_physical_seconds"],
             "unobserved": state["unobserved_physical_seconds"],
             "unattributed": state["unattributed_physical_seconds"]}
@@ -171,12 +166,30 @@ def interval_occupancy(observations, since, until, interval):
                    "intervalOccupied": True} for uuid, rows in owners.items()}
 
 
+def empty_gpu_metrics():
+    return {"utilization": None, "memoryUsed": None, "memoryUtilization": None,
+            "metricSamples": 0, "metricCoverage": {}, "intervalOwners": [], "intervalOccupied": False}
+
+
+def metric_windows(observations, metric_start, now, interval):
+    windows = {}
+    gpu_observations = [(t, current.get("gpus", [])) for t, current in observations]
+    for key, start in (("15m", metric_start), ("1h", now - 3600),
+                       ("6h", now - 21600), ("24h", now - 86400)):
+        averages = averaged_metrics(gpu_observations, start, now, interval)
+        occupancy = interval_occupancy(observations, start, now, interval)
+        metrics = {uuid: {**empty_gpu_metrics(), **averages.get(uuid, {}), **occupancy.get(uuid, {})}
+                   for uuid in averages.keys() | occupancy.keys()}
+        windows[key] = {"start": start, "end": now, "metrics": metrics}
+    return windows
+
+
 def history(cfg, state, common, now, metric_start):
     buckets = {}
     first = None
     incidents = []
     observations = []
-    metric_since = metric_start - 3 * cfg["gpu_interval"]
+    metric_since = min(metric_start, now - 86400) - 3 * cfg["gpu_interval"]
     for item in common.read_events(Path(cfg["gpu_root"]) / cfg["host"], min(now - 7 * 86400, metric_since)):
         kind = item["type"]
         if kind in ("start", "stop", "sample_error") and metric_since <= item["time"] <= now:
@@ -198,10 +211,8 @@ def history(cfg, state, common, now, metric_start):
     if first:
         points.append(first)
     observations.append((state["last_success_at"], state.get("current", {})))
-    averages = averaged_metrics([(t, current.get("gpus", [])) for t, current in observations],
-                                metric_start, now, cfg["gpu_interval"])
-    occupancy = interval_occupancy(observations, metric_start, now, cfg["gpu_interval"])
-    return sorted({p["t"]: p for p in points}.values(), key=lambda item: item["t"]), incidents, averages, occupancy
+    windows = metric_windows(observations, metric_start, now, cfg["gpu_interval"])
+    return sorted({p["t"]: p for p in points}.values(), key=lambda item: item["t"]), incidents, windows
 
 
 def gpu_metrics():
@@ -232,13 +243,13 @@ def build_payload(private, now=None, previous_generated_at=None):
     gpu = importlib.import_module("gpu_usage")
     state = read_json(Path(cfg["gpu_root"]) / cfg["host"] / "status.json")
     gpu_problems = gpu.health(state, now=now)
-    samples, incidents, averages, occupancy = history(cfg, state, common, now, metric_start)
+    samples, incidents, windows = history(cfg, state, common, now, metric_start)
     current = state.get("current", {})
     cards = gpu_metrics()
     for card in cards:
-        card.update(averages.get(card["uuid"], {"utilization": None, "memoryUsed": None,
-                    "memoryUtilization": None, "metricSamples": 0, "metricCoverage": {}}))
-        card.update(occupancy.get(card["uuid"], {"intervalOwners": [], "intervalOccupied": False}))
+        for window in windows.values():
+            window["metrics"].setdefault(card["uuid"], empty_gpu_metrics())
+        card.update(windows["15m"]["metrics"][card["uuid"]])
         owners = current.get("owners", {}).get(card["uuid"], {})
         card["owners"] = [identity(row) for row in owners.values()]
         card["processes"] = sum(p["gpu_uuid"] == card["uuid"] for p in current.get("processes", []))
@@ -253,9 +264,8 @@ def build_payload(private, now=None, previous_generated_at=None):
                      "startedAt": state["created_at"], "lastSample": state["last_success_at"],
                      "sampleCount": state["sample_count"], "gpuInterval": cfg["gpu_interval"],
                      "metricWindow": {"start": metric_start, "end": now},
-                     "problems": gpu_problems, "ledgerId": state["ledger_id"],
-                     "users": {key: {**identity(row), "totalSeconds": row["gpu_seconds"],
-                                "sharedSeconds": row["shared_gpu_seconds"]} for key, row in state["users"].items()}},
+                     "metricWindows": windows,
+                     "problems": gpu_problems, "ledgerId": state["ledger_id"]},
             "collectors": {"gpu": collector_status(state, gpu_problems)},
             "history": samples, "events": sorted(incidents, key=lambda item: item["t"], reverse=True)[:120]}
 

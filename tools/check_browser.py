@@ -56,6 +56,49 @@ def assert_logged_out(page):
     assert page.evaluate("sessionStorage.getItem('yxgpu-session')") is None
 
 
+def inspect_gpu_window(page, key):
+    result = page.evaluate("""async key => {
+        const {loadSession}=await import(new URL('assets/session.js',location.href));
+        const {decrypt}=await import(new URL('assets/crypto.js',location.href));
+        const {formatTime}=await import(new URL('assets/time.js',location.href));
+        const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
+        const data=await decrypt(envelope,(await loadSession()).key);
+        const window=data.node.metricWindows[key];
+        const gpus=data.node.gpus.map(gpu=>({...gpu,...window.metrics[gpu.uuid]}));
+        const format=n=>Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:0,minimumFractionDigits:0}):'—';
+        const period=`区间平均 · ${formatTime(window.start)} - ${formatTime(window.end)} · 北京时间`;
+        return {
+            checks:{
+                validWindow:window.start<window.end && window.end===data.generatedAt,
+                selected:document.querySelector(`[data-gpu-window="${key}"]`).getAttribute('aria-pressed')==='true',
+                labels:document.querySelector('.gpu-period').textContent===period,
+                meters:gpus.every(gpu=>{
+                    const meters=document.querySelector(`[data-gpu="${gpu.index}"]`).querySelectorAll('.gpu-meter');
+                    return meters[0].querySelector('b').textContent.trim()===format(gpu.utilization)+' %' &&
+                        meters[1].querySelector('b').textContent.trim()===format(gpu.memoryUtilization)+' %' &&
+                        Math.abs(parseFloat(meters[0].querySelector('.meter-track span').style.width)-(gpu.utilization||0))<0.001 &&
+                        Math.abs(parseFloat(meters[1].querySelector('.meter-track span').style.width)-(gpu.memoryUtilization||0))<0.001;
+                }),
+                owners:gpus.every(gpu=>{
+                    const card=document.querySelector(`[data-gpu="${gpu.index}"]`);
+                    const names=[...card.querySelectorAll('.gpu-owners .user-tag')].map(tag=>tag.textContent.trim());
+                    return card.querySelector('.gpu-owner-label').textContent==='区间占用用户' &&
+                        JSON.stringify(names)===JSON.stringify(gpu.intervalOwners.map(owner=>owner.name)) &&
+                        card.querySelector('.badge').textContent.startsWith('当前');
+                }),
+                aggregateHistory:!Object.hasOwn(data.node,'users') && data.history.every(point=>
+                    !['cards','totals','shared'].some(key=>Object.hasOwn(point,key))),
+                sampled:gpus.every(gpu=>gpu.metricSamples>1 && gpu.metricCoverage.utilization>0)
+            },
+            gpus:gpus.map(gpu=>({index:gpu.index,utilization:gpu.utilization,
+                memoryUtilization:gpu.memoryUtilization,memoryUsed:gpu.memoryUsed,owners:gpu.intervalOwners})),
+            period,start:formatTime(window.start,{second:'2-digit'}),end:formatTime(window.end,{second:'2-digit'})
+        };
+    }""", key)
+    assert all(result["checks"].values()), {"window": key, **result["checks"]}
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8765")
@@ -125,45 +168,12 @@ def main():
         checks.append("a fresh tab cannot reuse another tab's saved session")
         page.wait_for_timeout(600)
         assert page.locator(".gpu-card").count() == 8
-        averages = page.evaluate("""async () => {
-            const {loadSession}=await import(new URL('assets/session.js',location.href));
-            const {decrypt}=await import(new URL('assets/crypto.js',location.href));
-            const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
-            const saved=await loadSession();const data=await decrypt(envelope,saved.key);
-            const format=n=>Number.isFinite(n)?n.toLocaleString('en-US',{maximumFractionDigits:0,minimumFractionDigits:0}):'—';
-            return {
-                validWindow:data.node.metricWindow.start<data.node.metricWindow.end && data.node.metricWindow.end===data.generatedAt,
-                labels:document.querySelector('.gpu-period').textContent.startsWith('区间平均 · ') &&
-                    document.querySelector('.gpu-period').textContent.endsWith(' · 北京时间'),
-                cards:data.node.gpus.every(gpu=>{
-                    const card=document.querySelector(`[data-gpu="${gpu.index}"]`);
-                    const meters=card.querySelectorAll('.gpu-meter');
-                    return meters[0].querySelector('b').textContent.trim()===format(gpu.utilization)+' %' &&
-                        meters[1].querySelector('b').textContent.trim()===format(gpu.memoryUtilization)+' %' &&
-                        Math.abs(parseFloat(meters[0].querySelector('.meter-track span').style.width)-(gpu.utilization||0))<0.001 &&
-                        Math.abs(parseFloat(meters[1].querySelector('.meter-track span').style.width)-(gpu.memoryUtilization||0))<0.001;
-                }),
-                owners:data.node.gpus.every(gpu=>{
-                    const card=document.querySelector(`[data-gpu="${gpu.index}"]`);
-                    const names=[...card.querySelectorAll('.gpu-owners .user-tag')].map(tag=>tag.textContent.trim());
-                    return Array.isArray(gpu.intervalOwners) && typeof gpu.intervalOccupied==='boolean' &&
-                        card.querySelector('.gpu-owner-label').textContent==='区间占用用户' &&
-                        JSON.stringify(names)===JSON.stringify(gpu.intervalOwners.map(owner=>owner.name)) &&
-                        card.querySelector('.badge').textContent.startsWith('当前');
-                }),
-                sampled:data.node.gpus.every(gpu=>gpu.metricSamples>1 && gpu.metricCoverage.utilization>0)
-            };
-        }""")
-        assert all(averages.values()), averages
+        inspect_gpu_window(page, "15m")
         checks.append("all GPU meters match interval averages; the Beijing-time averaging window is visible")
-        checks.append("GPU cards show deduplicated interval users separately from current occupancy")
-        interval_owners = page.evaluate("""async () => {
-            const {loadSession}=await import(new URL('assets/session.js',location.href));
-            const {decrypt}=await import(new URL('assets/crypto.js',location.href));
-            const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
-            const data=await decrypt(envelope,(await loadSession()).key);
-            return data.node.gpus.map(gpu=>({index:gpu.index,owners:gpu.intervalOwners}));
-        }""")
+        assert page.locator('[data-view="users"], [data-chart-mode], [data-user], #userSearch, .rank-list').count() == 0
+        assert "用户用量" not in page.locator("#app").inner_text()
+        assert page.evaluate("echarts.getInstanceByDom(document.querySelector('#occupancyChart')).getOption().series.map(item=>item.name)") == ["物理卡占用"]
+        checks.append("personal usage pages, rankings, chart modes and statistics are removed; GPU interval users remain")
         assert page.locator("#password").input_value() == ""
         canvas = page.evaluate("""() => { const canvas=document.querySelector('#occupancyChart canvas');
             const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
@@ -172,8 +182,19 @@ def main():
         assert canvas["painted"] > 100 and canvas["colors"] > 5, canvas
         checks.append("real encrypted data decrypts and paints nonblank chart")
         page.screenshot(path=str(artifacts / "overview-desktop.png"), full_page=True)
+        with page.expect_download() as overview_download:
+            page.locator("[data-export]").click()
+        with Path(overview_download.value.path()).open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.reader(handle))
+        assert rows[0] == ["时间（北京时间）", "占用GPU数", "空闲GPU数", "累计占用卡时/GPU·h"]
+        assert len(rows) > 1 and all(len(row) == 4 for row in rows)
+        checks.append("overview CSV contains only aggregate physical GPU history")
         page.locator('[data-range="6"]').click()
-        page.locator('[data-chart-mode="users"]').click()
+        for key in ("1h", "6h", "24h", "15m"):
+            page.locator(f'[data-gpu-window="{key}"]').click()
+            selected_window = inspect_gpu_window(page, key)
+            assert page.locator('[data-range="6"]').get_attribute("aria-pressed") == "true"
+        checks.append("all four GPU periods update averages and users independently of the overview chart range")
         page.locator('[data-gpu="0"]').click()
         assert page.locator("#detailDialog").is_visible()
         assert "平均利用率" in page.locator("#detailDialog").inner_text()
@@ -182,28 +203,21 @@ def main():
         assert "区间占用用户" in page.locator("#detailDialog").inner_text()
         assert page.locator("#detailDialog .scope-tags .badge").all_text_contents() == [
             f'{owner["name"]} · UID {owner["uid"]}'
-            for owner in next(gpu["owners"] for gpu in interval_owners if gpu["index"] == 0)]
+            for owner in next(gpu["owners"] for gpu in selected_window["gpus"] if gpu["index"] == 0)]
+        assert selected_window["period"] in page.locator("#detailDialog").inner_text()
         page.locator("[data-close-dialog]").click()
-        checks.append("time range, user chart and GPU detail work")
-        page.locator('[data-view="users"]').click()
-        page.locator("#userSearch").fill("no-such-user")
-        assert page.locator(".empty-state").is_visible()
-        page.locator("#userSearch").fill("")
-        page.locator("[data-sort=uid]").click()
-        page.locator("[data-user]").first.click()
-        assert page.locator("#detailDialog canvas").count() == 1
-        page.locator("[data-close-dialog]").click()
-        with page.expect_download() as downloaded:
-            page.locator("[data-export]").click()
-        assert downloaded.value.suggested_filename.endswith(".csv")
-        checks.append("user search, sorting, details and CSV export work")
+        checks.append("GPU detail retains interval users and the selected window")
+        page.evaluate("location.hash='users'")
+        page.wait_for_function("() => document.querySelector('#main h1')?.textContent === '集群概览'")
+        assert page.locator('[data-user], #userSearch, .rank-list').count() == 0
         assert page.locator('[data-view="proxy"]').count() == 0
-        for view in ("users", "gpus", "events"):
+        for view in ("gpus", "events"):
             page.locator(f'[data-view="{view}"]').click()
             page.wait_for_timeout(120)
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-            page.screenshot(path=str(artifacts / (view + "-desktop.png")), full_page=True)
             if view == "gpus":
+                page.locator('[data-gpu-window="6h"]').click()
+                selected_window = inspect_gpu_window(page, "6h")
                 with page.expect_download() as gpu_download:
                     page.locator("[data-export]").click()
                 with Path(gpu_download.value.path()).open(encoding="utf-8-sig", newline="") as handle:
@@ -212,8 +226,12 @@ def main():
                 assert "区间开始（北京时间）" in rows[0] and len(rows) == 9
                 assert rows[0][-1] == "区间占用账号"
                 assert [row[-1] for row in rows[1:]] == [
-                    ";".join(owner["name"] for owner in gpu["owners"]) for gpu in interval_owners]
-                checks.append("GPU detail and CSV include interval users with Beijing-time window boundaries")
+                    ";".join(owner["name"] for owner in gpu["owners"]) for gpu in selected_window["gpus"]]
+                assert all(row[5:7] == [selected_window["start"], selected_window["end"]] for row in rows[1:])
+                for row, gpu in zip(rows[1:], selected_window["gpus"]):
+                    assert [float(value) for value in row[2:5]] == [gpu["utilization"], gpu["memoryUtilization"], gpu["memoryUsed"]]
+                checks.append("GPU CSV exports selected-period averages, users and Beijing-time boundaries")
+            page.screenshot(path=str(artifacts / (view + "-desktop.png")), full_page=True)
         assert page.locator(".runtime-row").count() == 1
         assert "代理" not in page.locator("#app").inner_text()
         for source in ("gpu",):
@@ -256,7 +274,7 @@ def main():
         assert page.locator("#eventFilter").input_value() == "start"
         page.locator("#eventFilter").select_option("all")
         checks.append("collector status, runtime, stale/stopped/error handling and event filters are correct")
-        checks.append("four desktop views fit; proxy auditing is removed; sampling and publication are distinct")
+        checks.append("three desktop views fit; sampling and publication remain distinct")
         page.locator('[data-view="overview"]').click()
         page.locator("#themeToggle").click()
         page.wait_for_timeout(400)
@@ -275,12 +293,18 @@ def main():
         page.wait_for_timeout(350)
         page.screenshot(path=str(artifacts / "overview-mobile.png"), full_page=True)
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        for view in ("gpus", "users", "events", "overview"):
+        for view in ("gpus", "events", "overview"):
             page.locator("#mobileMenu").click()
             page.locator(f'[data-view="{view}"]').click()
             page.wait_for_timeout(150)
             assert not page.locator("#sidebar").evaluate("el => el.classList.contains('open')")
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            if view == "gpus":
+                for key in ("15m", "1h", "6h", "24h"):
+                    page.locator(f'[data-gpu-window="{key}"]').click()
+                    inspect_gpu_window(page, key)
+                    assert page.locator(".gpu-card, .gpu-window-bar").evaluate_all("elements => elements.every(el => el.scrollWidth <= el.clientWidth)")
+                page.screenshot(path=str(artifacts / "gpus-mobile.png"), full_page=True)
             if view == "events":
                 page.screenshot(path=str(artifacts / "events-mobile.png"), full_page=True)
                 assert page.locator(".runtime-row").count() == 1

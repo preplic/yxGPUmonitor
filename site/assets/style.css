@@ -894,9 +894,16 @@ main {
   color: var(--accent);
 }
 .gpu-period {
-  margin: -4px 0 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+.gpu-window-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
 }
 .gpu-grid {
   display: grid;
