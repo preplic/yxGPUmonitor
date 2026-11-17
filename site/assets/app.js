@@ -123,11 +123,13 @@ function rankings() {
 function gpuCard(gpu) {
   const util = Math.min(100, Math.max(0, gpu.utilization || 0));
   const memory = Math.min(100, Math.max(0, gpu.memoryUtilization || 0));
-  return `<article class="gpu-card" data-gpu="${gpu.index}" tabindex="0" role="button" aria-label="查看 GPU ${gpu.index} 详情"><div class="gpu-card-top">${icon('microchip')}<strong>GPU ${gpu.index}</strong><span class="badge ${gpu.occupied ? 'good' : ''}">${gpu.owners.length > 1 ? '共享' : gpu.occupied ? '占用' : '空闲'}</span></div>
+  const owners = gpu.intervalOwners || [];
+  const emptyOwners = !gpu.intervalOwners ? '暂无区间记录' : gpu.intervalOccupied ? '归属待确认' : '无';
+  return `<article class="gpu-card" data-gpu="${gpu.index}" tabindex="0" role="button" aria-label="查看 GPU ${gpu.index} 详情"><div class="gpu-card-top">${icon('microchip')}<strong>GPU ${gpu.index}</strong><span class="badge ${gpu.occupied ? 'good' : ''}">${gpu.owners.length > 1 ? '当前共享' : gpu.occupied ? '当前占用' : '当前空闲'}</span></div>
     <div class="gpu-model">${esc(modelName(gpu.model))} · ${fmt(gpu.memoryTotal / 1024, 0)} GiB</div>
     <div class="gpu-meter"><div class="meter-label"><span>平均利用率</span><b>${fmt(gpu.utilization, 0)}<small> %</small></b></div><div class="meter-track"><span style="width:${util}%"></span></div></div>
     <div class="gpu-meter"><div class="meter-label"><span>平均显存</span><b title="${fmt(gib(gpu.memoryUsed), 1)} / ${fmt(gib(gpu.memoryTotal), 0)} GiB">${fmt(gpu.memoryUtilization, 0)}<small> %</small></b></div><div class="meter-track memory"><span style="width:${memory}%"></span></div></div>
-    <div class="gpu-owners">${gpu.owners.length ? gpu.owners.map(owner => `<span class="user-tag">${icon('user-round')}${esc(owner.name)}</span>`).join('') : `<span>${gpu.occupied ? '归属待确认' : '—'}</span>`}</div>
+    <div class="gpu-owner-label">区间占用用户</div><div class="gpu-owners">${owners.length ? owners.map(owner => `<span class="user-tag">${icon('user-round')}${esc(owner.name)}</span>`).join('') : `<span>${emptyOwners}</span>`}</div>
     <div class="gpu-card-bottom"><span>${icon('thermometer')}${fmt(gpu.temperature, 0)} °C</span><span>${icon('zap')}${fmt(gpu.power, 0)} / ${fmt(gpu.powerLimit, 0)} W</span></div></article>`;
 }
 
@@ -268,14 +270,16 @@ function userDetail(key) {
 function gpuDetail(index) {
   const gpu = state.data.node.gpus.find(item => item.index === Number(index));
   if (!gpu) return;
-  $('#detailContent').innerHTML = `<div class="dialog-heading"><h2>GPU ${gpu.index} <span class="heading-note">${esc(gpu.model)}</span></h2><button class="icon-button" data-close-dialog aria-label="关闭详情" data-tooltip="关闭">${icon('x')}</button></div><p class="heading-note">${metricPeriod()}</p><dl class="detail-values"><div><dt>平均利用率</dt><dd>${fmt(gpu.utilization, 0)} %</dd></div><div><dt>平均显存占用</dt><dd>${fmt(gib(gpu.memoryUsed), 1)} GiB</dd></div><div><dt>平均显存占用率</dt><dd>${fmt(gpu.memoryUtilization, 0)} %</dd></div><div><dt>有效采样</dt><dd>${fmt(gpu.metricSamples, 0)} 次</dd></div><div><dt>当前计算进程</dt><dd>${gpu.processes}</dd></div></dl><div class="section-heading"><h2>当前占用账号</h2><span class="badge ${gpu.occupied ? 'good' : ''}">${gpu.occupied ? '占用' : '空闲'}</span></div><div class="scope-tags">${gpu.owners.map(owner => `<span class="badge">${esc(owner.name)} · UID ${owner.uid}</span>`).join('') || '<span class="heading-note">无</span>'}</div><dl class="detail-values"><div><dt>温度</dt><dd>${fmt(gpu.temperature, 0)} °C</dd></div><div><dt>功耗</dt><dd>${fmt(gpu.power, 0)} W</dd></div><div><dt>功率上限</dt><dd>${fmt(gpu.powerLimit, 0)} W</dd></div></dl><p class="detail-uuid">${esc(gpu.uuid)}</p>`;
+  const owners = gpu.intervalOwners || [];
+  const emptyOwners = !gpu.intervalOwners ? '暂无区间记录' : gpu.intervalOccupied ? '归属待确认' : '无';
+  $('#detailContent').innerHTML = `<div class="dialog-heading"><h2>GPU ${gpu.index} <span class="heading-note">${esc(gpu.model)}</span></h2><button class="icon-button" data-close-dialog aria-label="关闭详情" data-tooltip="关闭">${icon('x')}</button></div><p class="heading-note">${metricPeriod()}</p><dl class="detail-values"><div><dt>平均利用率</dt><dd>${fmt(gpu.utilization, 0)} %</dd></div><div><dt>平均显存占用</dt><dd>${fmt(gib(gpu.memoryUsed), 1)} GiB</dd></div><div><dt>平均显存占用率</dt><dd>${fmt(gpu.memoryUtilization, 0)} %</dd></div><div><dt>有效采样</dt><dd>${fmt(gpu.metricSamples, 0)} 次</dd></div><div><dt>当前计算进程</dt><dd>${gpu.processes}</dd></div></dl><div class="section-heading"><h2>区间占用用户</h2></div><div class="scope-tags">${owners.map(owner => `<span class="badge">${esc(owner.name)} · UID ${owner.uid}</span>`).join('') || `<span class="heading-note">${emptyOwners}</span>`}</div><dl class="detail-values"><div><dt>温度</dt><dd>${fmt(gpu.temperature, 0)} °C</dd></div><div><dt>功耗</dt><dd>${fmt(gpu.power, 0)} W</dd></div><div><dt>功率上限</dt><dd>${fmt(gpu.powerLimit, 0)} W</dd></div></dl><p class="detail-uuid">${esc(gpu.uuid)}</p>`;
   $('#detailDialog').showModal();
   icons();
 }
 
 function exportCsv() {
   let rows;
-  if (currentView() === 'gpus') rows = [['GPU', '型号', '平均利用率%', '平均显存占用率%', '平均显存MiB', '区间开始（北京时间）', '区间结束（北京时间）', '温度°C', '功耗W', '当前占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUtilization, gpu.memoryUsed, date(state.data.node.metricWindow?.start, { second: '2-digit' }), date(state.data.node.metricWindow?.end, { second: '2-digit' }), gpu.temperature, gpu.power, gpu.owners.map(owner => owner.name).join(';')])];
+  if (currentView() === 'gpus') rows = [['GPU', '型号', '平均利用率%', '平均显存占用率%', '平均显存MiB', '区间开始（北京时间）', '区间结束（北京时间）', '温度°C', '功耗W', '区间占用账号'], ...state.data.node.gpus.map(gpu => [gpu.index, gpu.model, gpu.utilization, gpu.memoryUtilization, gpu.memoryUsed, date(state.data.node.metricWindow?.start, { second: '2-digit' }), date(state.data.node.metricWindow?.end, { second: '2-digit' }), gpu.temperature, gpu.power, (gpu.intervalOwners || []).map(owner => owner.name).join(';')])];
   else if (currentView() === 'events') rows = [['时间（北京时间）', '来源', '类型', '详情', '秒'], ...state.data.events.filter(row => row.source === 'gpu').map(row => [date(row.t), row.source, row.type, row.message || '', row.seconds || ''])];
   else rows = [['用户名', 'UID', '当前占卡', '区间GPU小时', '共享GPU小时', '累计GPU小时'], ...usageRows().map(row => [row.name, row.uid, row.occupied, row.hours, row.shared, row.totalSeconds / 3600])];
   const csv = '\ufeff' + rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');

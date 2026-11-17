@@ -136,17 +136,34 @@ def main():
                 labels:document.querySelector('.gpu-period').textContent.startsWith('区间平均 · ') &&
                     document.querySelector('.gpu-period').textContent.endsWith(' · 北京时间'),
                 cards:data.node.gpus.every(gpu=>{
-                    const meters=document.querySelector(`[data-gpu="${gpu.index}"]`).querySelectorAll('.gpu-meter');
+                    const card=document.querySelector(`[data-gpu="${gpu.index}"]`);
+                    const meters=card.querySelectorAll('.gpu-meter');
                     return meters[0].querySelector('b').textContent.trim()===format(gpu.utilization)+' %' &&
                         meters[1].querySelector('b').textContent.trim()===format(gpu.memoryUtilization)+' %' &&
                         Math.abs(parseFloat(meters[0].querySelector('.meter-track span').style.width)-(gpu.utilization||0))<0.001 &&
                         Math.abs(parseFloat(meters[1].querySelector('.meter-track span').style.width)-(gpu.memoryUtilization||0))<0.001;
+                }),
+                owners:data.node.gpus.every(gpu=>{
+                    const card=document.querySelector(`[data-gpu="${gpu.index}"]`);
+                    const names=[...card.querySelectorAll('.gpu-owners .user-tag')].map(tag=>tag.textContent.trim());
+                    return Array.isArray(gpu.intervalOwners) && typeof gpu.intervalOccupied==='boolean' &&
+                        card.querySelector('.gpu-owner-label').textContent==='区间占用用户' &&
+                        JSON.stringify(names)===JSON.stringify(gpu.intervalOwners.map(owner=>owner.name)) &&
+                        card.querySelector('.badge').textContent.startsWith('当前');
                 }),
                 sampled:data.node.gpus.every(gpu=>gpu.metricSamples>1 && gpu.metricCoverage.utilization>0)
             };
         }""")
         assert all(averages.values()), averages
         checks.append("all GPU meters match interval averages; the Beijing-time averaging window is visible")
+        checks.append("GPU cards show deduplicated interval users separately from current occupancy")
+        interval_owners = page.evaluate("""async () => {
+            const {loadSession}=await import(new URL('assets/session.js',location.href));
+            const {decrypt}=await import(new URL('assets/crypto.js',location.href));
+            const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
+            const data=await decrypt(envelope,(await loadSession()).key);
+            return data.node.gpus.map(gpu=>({index:gpu.index,owners:gpu.intervalOwners}));
+        }""")
         assert page.locator("#password").input_value() == ""
         canvas = page.evaluate("""() => { const canvas=document.querySelector('#occupancyChart canvas');
             const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
@@ -162,6 +179,10 @@ def main():
         assert "平均利用率" in page.locator("#detailDialog").inner_text()
         assert "平均显存占用率" in page.locator("#detailDialog").inner_text()
         assert "有效采样" in page.locator("#detailDialog").inner_text()
+        assert "区间占用用户" in page.locator("#detailDialog").inner_text()
+        assert page.locator("#detailDialog .scope-tags .badge").all_text_contents() == [
+            f'{owner["name"]} · UID {owner["uid"]}'
+            for owner in next(gpu["owners"] for gpu in interval_owners if gpu["index"] == 0)]
         page.locator("[data-close-dialog]").click()
         checks.append("time range, user chart and GPU detail work")
         page.locator('[data-view="users"]').click()
@@ -189,7 +210,10 @@ def main():
                     rows = list(csv.reader(handle))
                 assert rows[0][2:5] == ["平均利用率%", "平均显存占用率%", "平均显存MiB"]
                 assert "区间开始（北京时间）" in rows[0] and len(rows) == 9
-                checks.append("GPU CSV exports interval averages and Beijing-time window boundaries")
+                assert rows[0][-1] == "区间占用账号"
+                assert [row[-1] for row in rows[1:]] == [
+                    ";".join(owner["name"] for owner in gpu["owners"]) for gpu in interval_owners]
+                checks.append("GPU detail and CSV include interval users with Beijing-time window boundaries")
         assert page.locator(".runtime-row").count() == 1
         assert "代理" not in page.locator("#app").inner_text()
         for source in ("gpu",):

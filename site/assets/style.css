@@ -1005,6 +1005,11 @@ main {
 .meter-track.memory span {
   background: var(--blue);
 }
+.gpu-owner-label {
+  margin-bottom: 5px;
+  font-size: 9px;
+  color: var(--muted);
+}
 .gpu-owners {
   min-height: 20px;
   display: flex;

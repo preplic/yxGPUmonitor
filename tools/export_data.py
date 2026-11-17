@@ -152,6 +152,25 @@ def averaged_metrics(observations, since, until, interval):
             for uuid, item in totals.items()}
 
 
+def interval_occupancy(observations, since, until, interval):
+    owners = {}
+    observations = sorted({t: current for t, current in observations if t <= until}.items())
+    for index, (t, current) in enumerate(observations):
+        if t < since:
+            end = observations[index + 1][0] if index + 1 < len(observations) else until
+            if end <= since or end - t > 3 * interval:
+                continue
+        # An observed owner within the window still counts if sampling later stops.
+        for uuid, rows in current.get("owners", {}).items():
+            for row in rows.values():
+                owner = identity(row)
+                owners.setdefault(uuid, {})[(owner["uid"], owner["name"])] = owner
+        for process in current.get("processes", []):
+            owners.setdefault(process["gpu_uuid"], {})
+    return {uuid: {"intervalOwners": sorted(rows.values(), key=lambda row: (row["name"], row["uid"])),
+                   "intervalOccupied": True} for uuid, rows in owners.items()}
+
+
 def history(cfg, state, common, now, metric_start):
     buckets = {}
     first = None
@@ -161,10 +180,10 @@ def history(cfg, state, common, now, metric_start):
     for item in common.read_events(Path(cfg["gpu_root"]) / cfg["host"], min(now - 7 * 86400, metric_since)):
         kind = item["type"]
         if kind in ("start", "stop", "sample_error") and metric_since <= item["time"] <= now:
-            observations.append((item["time"], []))
+            observations.append((item["time"], {}))
         if kind == "sample" and item.get("ledger_id") == state["ledger_id"] and item["last_success_at"] <= now:
             if item["last_success_at"] >= metric_since:
-                observations.append((item["last_success_at"], item.get("current", {}).get("gpus", [])))
+                observations.append((item["last_success_at"], item.get("current", {})))
             if item["last_success_at"] < now - 7 * 86400:
                 continue
             value = point(item)
@@ -178,9 +197,11 @@ def history(cfg, state, common, now, metric_start):
     points = [*buckets.values(), point(state)]
     if first:
         points.append(first)
-    observations.append((state["last_success_at"], state.get("current", {}).get("gpus", [])))
-    averages = averaged_metrics(observations, metric_start, now, cfg["gpu_interval"])
-    return sorted({p["t"]: p for p in points}.values(), key=lambda item: item["t"]), incidents, averages
+    observations.append((state["last_success_at"], state.get("current", {})))
+    averages = averaged_metrics([(t, current.get("gpus", [])) for t, current in observations],
+                                metric_start, now, cfg["gpu_interval"])
+    occupancy = interval_occupancy(observations, metric_start, now, cfg["gpu_interval"])
+    return sorted({p["t"]: p for p in points}.values(), key=lambda item: item["t"]), incidents, averages, occupancy
 
 
 def gpu_metrics():
@@ -211,12 +232,13 @@ def build_payload(private, now=None, previous_generated_at=None):
     gpu = importlib.import_module("gpu_usage")
     state = read_json(Path(cfg["gpu_root"]) / cfg["host"] / "status.json")
     gpu_problems = gpu.health(state, now=now)
-    samples, incidents, averages = history(cfg, state, common, now, metric_start)
+    samples, incidents, averages, occupancy = history(cfg, state, common, now, metric_start)
     current = state.get("current", {})
     cards = gpu_metrics()
     for card in cards:
         card.update(averages.get(card["uuid"], {"utilization": None, "memoryUsed": None,
                     "memoryUtilization": None, "metricSamples": 0, "metricCoverage": {}}))
+        card.update(occupancy.get(card["uuid"], {"intervalOwners": [], "intervalOccupied": False}))
         owners = current.get("owners", {}).get(card["uuid"], {})
         card["owners"] = [identity(row) for row in owners.values()]
         card["processes"] = sum(p["gpu_uuid"] == card["uuid"] for p in current.get("processes", []))
