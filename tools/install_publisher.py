@@ -21,14 +21,15 @@ def main():
     units = Path.home() / ".config/systemd/user"
     units.mkdir(parents=True, exist_ok=True)
     (units / "yxgpu-publish.service").write_text(
-        "[Unit]\nDescription=Publish encrypted YX GPU dashboard snapshot\n\n[Service]\nType=oneshot\n"
-        "WorkingDirectory=%s\nExecStart=/bin/bash -ic %s\nUMask=0077\nTimeoutStartSec=300\n" % (str(REPO).replace("%", "%%"), quoted))
+        "[Unit]\nDescription=Publish encrypted YX GPU dashboard snapshot\nStartLimitIntervalSec=0\n\n[Service]\nType=oneshot\n"
+        "WorkingDirectory=%s\nExecStart=/bin/bash -ic %s\nUMask=0077\nTimeoutStartSec=300\n"
+        "Restart=on-failure\nRestartSec=120\n" % (str(REPO).replace("%", "%%"), quoted))
     (units / "yxgpu-publish.timer").write_text(
         "[Unit]\nDescription=Publish GPU dashboard every 15 minutes\n\n[Timer]\n"
         "OnCalendar=*:0/15\nPersistent=true\nRandomizedDelaySec=30\n\n[Install]\nWantedBy=timers.target\n")
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "--now", "yxgpu-publish.timer"], check=True)
-    print("15-minute publisher enabled; inspect journalctl --user -u yxgpu-publish.service")
+    print("15-minute publisher enabled; failures retry every 2 minutes. Inspect journalctl --user -u yxgpu-publish.service")
 
 
 if __name__ == "__main__":
