@@ -3,21 +3,21 @@
 
 import argparse
 import json
-import os
 from pathlib import Path
-import shlex
 import subprocess
 import urllib.error
 import urllib.request
 
 from export_data import REPO
+from network import direct_environment, github_ssh_command
 
 REPOSITORY = "preplic/yxGPUmonitor"
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def credential():
     result = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=github.com\n\n",
-        capture_output=True, text=True, timeout=60, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        capture_output=True, text=True, timeout=60, env={**direct_environment(), "GIT_TERMINAL_PROMPT": "0"})
     values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     token = values.get("password")
     if result.returncode or not token:
@@ -32,7 +32,7 @@ def api(token, path, method="GET", body=None, missing=False):
                  "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "yxGPUmonitor-publisher",
                  "Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=40) as response:
+        with OPENER.open(request, timeout=40) as response:
             raw = response.read()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -50,8 +50,6 @@ def main():
     parser.add_argument("--status", action="store_true", help="Read deployment status only")
     parser.add_argument("--pages-only", action="store_true")
     args = parser.parse_args()
-    if not any(os.environ.get(key) for key in ("https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY")):
-        parser.error("Load the selected proxy before calling this script")
     token = credential()
     path = "/repos/" + REPOSITORY
     if args.status:
@@ -83,13 +81,12 @@ def main():
         known_hosts = private / "github_known_hosts"
         known_hosts.write_text("".join("github.com " + value + "\n" for value in meta["ssh_keys"]))
         known_hosts.chmod(0o600)
-        command = "/usr/bin/ssh -i %s -o IdentitiesOnly=yes -o HostKeyAlias=github.com -o StrictHostKeyChecking=yes -o UserKnownHostsFile=%s -o ProxyCommand=%s" % (
-            shlex.quote(str(key)), shlex.quote(str(known_hosts)),
-            shlex.quote("/usr/bin/python3 %s %%h %%p" % shlex.quote(str(REPO / "tools/ssh_proxy.py"))))
+        command = github_ssh_command()
         subprocess.run(["git", "config", "core.sshCommand", command], cwd=REPO, check=True)
+        subprocess.run(["git", "config", "http.proxy", ""], cwd=REPO, check=True)
         subprocess.run(["git", "remote", "set-url", "--push", "origin",
                         "ssh://git@ssh.github.com:443/" + REPOSITORY + ".git"], cwd=REPO, check=True)
-        print("Repository-scoped deploy key configured outside Git; SSH uses the selected proxy.", flush=True)
+        print("Repository-scoped deploy key configured outside Git; SSH connects directly without an agent.", flush=True)
     api(token, path + "/actions/workflows/pages.yml/dispatches", "POST", {"ref": "main"})
     print("Pages deployment dispatched.", flush=True)
 

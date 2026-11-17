@@ -4,19 +4,20 @@
 import argparse
 import fcntl
 import json
-import os
 from pathlib import Path
 import subprocess
 import time
 
 from check_public import check
 from export_data import PRIVATE_CONFIG, REPO, export
+from network import direct_environment, github_ssh_command
 
 
 def git(*args, output=False):
-    result = subprocess.run(["git", *args], cwd=REPO, check=True, text=True,
+    result = subprocess.run(["git", "-c", "http.proxy=", *args], cwd=REPO, check=True, text=True,
                             capture_output=output, timeout=120,
-                            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+                            env={**direct_environment(), "GIT_TERMINAL_PROMPT": "0",
+                                 "GIT_SSH_COMMAND": github_ssh_command()})
     return result.stdout.strip() if output else None
 
 
