@@ -4,7 +4,7 @@ const finalErrors = new Set([
   'deployment_cancelled', 'deployment_lost', 'errored', 'cancelled'
 ]);
 
-module.exports = async function deployPages({ core, github, context, artifactId, sleep = delay }) {
+async function deployOnce({ core, github, context, artifactId, sleep = delay }) {
   const id = Number(artifactId);
   if (!Number.isSafeInteger(id) || id <= 0) throw new Error('Missing or invalid Pages artifact ID.');
   const oidcToken = await core.getIDToken();
@@ -21,9 +21,11 @@ module.exports = async function deployPages({ core, github, context, artifactId,
   try {
     for (let attempt = 0; attempt < 90; attempt++) {
       let status;
+      let detail;
       try {
         const response = await github.request('GET /repos/{owner}/{repo}/pages/deployments/{deploymentId}', parameters);
         status = response.data.status;
+        detail = response.data.error?.message;
         errors = 0;
       } catch (error) {
         const temporary = error.status === 404 || error.status === 429 || error.status >= 500;
@@ -39,7 +41,9 @@ module.exports = async function deployPages({ core, github, context, artifactId,
       }
       if (finalErrors.has(status)) {
         settled = true;
-        throw new Error(`GitHub Pages deployment failed: ${status}.`);
+        const error = new Error(`GitHub Pages deployment failed: ${status}.${detail ? ' ' + detail : ''}`);
+        error.retryable = status === 'deployment_failed' || status === 'deployment_lost';
+        throw error;
       }
       if (status) core.info(`GitHub Pages deployment status: ${status}.`);
       await sleep(5000);
@@ -52,6 +56,18 @@ module.exports = async function deployPages({ core, github, context, artifactId,
       } catch {
         core.warning('Could not cancel the unfinished Pages deployment.');
       }
+    }
+  }
+}
+
+module.exports = async function deployPages(options) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await deployOnce(options);
+    } catch (error) {
+      if ((!error.retryable && error.status !== 429 && !(error.status >= 500)) || attempt === 2) throw error;
+      options.core.info(`Temporary Pages deployment failure; retrying in ${(attempt + 1) * 30} seconds.`);
+      await (options.sleep || delay)((attempt + 1) * 30000);
     }
   }
 };

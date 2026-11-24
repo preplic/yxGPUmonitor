@@ -2,7 +2,7 @@ name: Deploy Encrypted GPU Dashboard
 on:
   push:
     branches: [main]
-    paths: ['site/**', '.github/workflows/pages.yml', '.github/scripts/**']
+    paths: ['site/**', '!site/data/**', '.github/workflows/pages.yml', '.github/scripts/**']
   workflow_dispatch:
 permissions:
   contents: read

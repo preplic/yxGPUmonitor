@@ -2,6 +2,7 @@ import { deriveKey, decrypt } from './crypto.js';
 import { formatTime as date, formatFileDate, TIME_ZONE_LABEL } from './time.js';
 import { SESSION_LIFETIME, loadSession, saveSession, clearSession } from './session.js';
 import { collectorRuntime, formatUptime } from './runtime.js';
+import { fetchSnapshot as fetchEnvelope } from './snapshot.js';
 
 const $ = (query, root = document) => root.querySelector(query);
 const icons = () => window.lucide?.createIcons({ attrs: { 'aria-hidden': 'true' } });
@@ -252,12 +253,6 @@ function exportCsv() {
   anchor.download = `yxgpu-${currentView()}-${formatFileDate(state.data.generatedAt)}.csv`;
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-async function fetchEnvelope() {
-  const response = await fetch(new URL('../data/snapshot.enc.json', import.meta.url), { cache: 'no-store', credentials: 'omit' });
-  if (!response.ok) throw new Error('暂时无法获取监控快照，请稍后重试');
-  return response.json();
 }
 
 function logout(message = '') {

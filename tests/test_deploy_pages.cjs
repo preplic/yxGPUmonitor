@@ -56,6 +56,25 @@ test('reports a failed deployment without claiming success', async () => {
   assert.deepEqual(state.outputs, {});
 });
 
+test('retries a temporary Pages backend failure using the same uploaded artifact', async () => {
+  const state = fixture(['deployment_failed', 'succeed']);
+  const waits = [];
+  state.sleep = async milliseconds => { waits.push(milliseconds); };
+  await deployPages(state);
+  const creates = state.calls.filter(call => call.route.endsWith('/deployments') && call.route.startsWith('POST'));
+  assert.equal(creates.length, 2);
+  assert.ok(creates.every(call => call.parameters.artifact_id === 42));
+  assert.deepEqual(waits, [30000]);
+  assert.equal(state.outputs.status, 'succeed');
+});
+
+test('stops after three failed Pages deployment attempts', async () => {
+  const state = fixture(['deployment_failed']);
+  await assert.rejects(deployPages(state), /deployment_failed/);
+  assert.equal(state.calls.filter(call => call.route.endsWith('/deployments') && call.route.startsWith('POST')).length, 3);
+  assert.deepEqual(state.outputs, {});
+});
+
 test('cancels a deployment that never finishes', async () => {
   const state = fixture(['deployment_in_progress']);
   await assert.rejects(deployPages(state), /timed out/);

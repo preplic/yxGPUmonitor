@@ -56,12 +56,53 @@ def assert_logged_out(page):
     assert page.evaluate("sessionStorage.getItem('yxgpu-session')") is None
 
 
+def check_snapshot_sources(browser, checks):
+    context = browser.new_context()
+    context.add_cookies([{"name": "test-cookie", "value": "not-for-data-requests",
+                         "domain": "raw.githubusercontent.com", "path": "/", "secure": True}])
+    page = context.new_page()
+    mode = "primary"
+    sources = []
+    module = (Path(__file__).resolve().parents[1] / "site/assets/snapshot.js").read_text()
+
+    def respond(route):
+        address = urlsplit(route.request.url)
+        if address.path.endswith("/assets/snapshot.js"):
+            route.fulfill(content_type="text/javascript", body=module)
+        elif address.path.endswith("/data/snapshot.enc.json"):
+            primary = address.hostname == "raw.githubusercontent.com"
+            sources.append("repository" if primary else "deployed")
+            assert "t=" in address.query
+            assert "cookie" not in route.request.all_headers()
+            status = 503 if mode == "offline" or (primary and mode == "fallback") else 200
+            body = "invalid-json" if primary and mode == "malformed" else json.dumps({"source": sources[-1]})
+            route.fulfill(status=status, content_type="application/json", body=body,
+                          headers={"Access-Control-Allow-Origin": "*"})
+        else:
+            route.fulfill(content_type="text/html", body="<!doctype html><html><body></body></html>")
+
+    page.route("**/*", respond)
+    page.goto("https://preplic.github.io/yxGPUmonitor/")
+    for mode, expected in (("primary", "repository"), ("fallback", "deployed"),
+                           ("malformed", "deployed"), ("offline", "error")):
+        sources.clear()
+        result = page.evaluate("""async () => {
+            const {fetchSnapshot}=await import('./assets/snapshot.js');
+            try{return (await fetchSnapshot()).source}catch{return 'error'}
+        }""")
+        assert result == expected, mode
+        assert sources == (["repository"] if mode == "primary" else ["repository", "deployed"]), mode
+    context.close()
+    checks.append("live data loads independently of Pages builds; source errors use the deployed encrypted copy without cookies")
+
+
 def inspect_gpu_window(page, key):
     result = page.evaluate("""async key => {
         const {loadSession}=await import(new URL('assets/session.js',location.href));
         const {decrypt}=await import(new URL('assets/crypto.js',location.href));
         const {formatTime}=await import(new URL('assets/time.js',location.href));
-        const envelope=await (await fetch(new URL('data/snapshot.enc.json',location.href),{cache:'no-store'})).json();
+        const {fetchSnapshot}=await import(new URL('assets/snapshot.js',location.href));
+        const envelope=await fetchSnapshot();
         const data=await decrypt(envelope,(await loadSession()).key);
         const window=data.node.metricWindows[key];
         const gpus=data.node.gpus.map(gpu=>({...gpu,...window.metrics[gpu.uuid]}));
@@ -125,6 +166,7 @@ def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=args.browser, headless=True,
             args=["--no-sandbox", "--disable-dev-shm-usage"], proxy=proxy)
+        check_snapshot_sources(browser, checks)
         context = browser.new_context(viewport={"width": 1440, "height": 1050}, device_scale_factor=1)
         page = context.new_page()
         page.on("pageerror", lambda error: errors.append(str(error)))
@@ -145,6 +187,7 @@ def main():
         assert page.locator("#app").is_hidden()
         checks.append("unlisted username is rejected")
         login(page, private["password"])
+        assert "数据已过期" not in page.locator("#main").inner_text()
         record = session_record(page)
         assert record["cryptoKey"] and record["extractable"] is False
         assert record["usages"] == ["decrypt"]
@@ -341,14 +384,14 @@ def main():
         page.reload(wait_until="networkidle")
         login(page, private["password"])
         pending = []
-        page.route("**/data/snapshot.enc.json", lambda route: pending.append(route))
-        with page.expect_request("**/data/snapshot.enc.json"):
+        page.route("**/data/snapshot.enc.json*", lambda route: pending.append(route))
+        with page.expect_request("**/data/snapshot.enc.json*"):
             page.locator("#refresh").click()
         page.locator("#logout").click()
         assert len(pending) == 1
-        with page.expect_response("**/data/snapshot.enc.json"):
+        with page.expect_response("**/data/snapshot.enc.json*"):
             pending[0].continue_()
-        page.unroute("**/data/snapshot.enc.json")
+        page.unroute("**/data/snapshot.enc.json*")
         page.wait_for_timeout(300)
         assert_logged_out(page)
         checks.append("an in-flight refresh cannot restore data after logout")
